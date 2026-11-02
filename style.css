@@ -526,5 +526,345 @@ html, body {
   fill: currentColor;
 }
 
+/* --------------------------------------------------------------------------
+   動画編集型 アノテーションスタジオ（完全ボーダーレス・面のトーン差・大画面）
+   -------------------------------------------------------------------------- */
+.annotation-studio {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background-color: var(--bg-deep);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.annotation-studio.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 上部ヘッダー */
+.studio-header {
+  height: 52px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.studio-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+
+.studio-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.studio-timecode {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.studio-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.studio-icon-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.studio-icon-btn.active {
+  background-color: var(--bg-elevated);
+  color: #ffffff;
+}
+
+.studio-icon-btn .btn-svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+/* 中央プレビューエリア（動画＋骨格 1:1同期キャンバス） */
+.studio-viewport {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #000000;
+  overflow: hidden;
+}
+
+.studio-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+  transition: transform 0.15s ease;
+}
+
+.studio-canvas.flipped {
+  transform: scaleX(-1);
+}
+
+.studio-flash {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+.studio-flash.flash-active {
+  opacity: 1;
+  transition: none;
+}
+
+/* 下部タイムライン ＆ コントローラー */
+.studio-footer {
+  background-color: var(--bg-surface);
+  padding: 12px 24px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* タイムライン */
+.timeline-container {
+  width: 100%;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.timeline-track {
+  position: relative;
+  width: 100%;
+  height: 32px;
+  background-color: var(--bg-elevated);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.timeline-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 0%;
+  background-color: rgba(255, 255, 255, 0.1);
+  pointer-events: none;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0%;
+  width: 2px;
+  background-color: #ffffff;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+}
+
+.timeline-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.marker-pin {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 4px;
+  border-radius: 2px;
+  background-color: #ffffff;
+  transform: translateX(-50%);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+}
+
+/* コントロール行 */
+.studio-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.studio-ctrl-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ctrl-icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.ctrl-icon-btn:hover {
+  background-color: var(--bg-active);
+  transform: scale(1.06);
+}
+
+.ctrl-icon-btn .btn-svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.ctrl-icon-btn.play-btn {
+  width: 42px;
+  height: 42px;
+  background-color: #ffffff;
+  color: #000000;
+}
+
+.ctrl-icon-btn.play-btn:hover {
+  background-color: #e5e5e5;
+}
+
+.ctrl-icon-btn.export-btn {
+  background-color: #ffffff;
+  color: #000000;
+}
+
+.ctrl-icon-btn.export-btn:hover {
+  background-color: #e5e5e5;
+}
+
+.studio-speed-group {
+  display: flex;
+  gap: 3px;
+  background-color: var(--bg-elevated);
+  padding: 3px;
+  border-radius: 8px;
+  margin-left: 6px;
+}
+
+.studio-speed-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.studio-speed-btn.active {
+  background-color: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* 中央: MARK HIT ボタン */
+.marker-center {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.studio-mark-btn {
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 20px;
+  background-color: #ffffff;
+  color: #000000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  transition: background-color 0.12s ease, transform 0.1s ease;
+}
+
+.studio-mark-btn:hover {
+  background-color: #e5e5e5;
+  transform: scale(1.04);
+}
+
+.studio-mark-btn:active {
+  transform: scale(0.96);
+}
+
+.studio-mark-btn.is-marked {
+  background-color: #ff3b30;
+  color: #ffffff;
+}
+
+.mark-btn-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.mark-circle {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+.studio-marker-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  min-width: 60px;
+}
+
+
+
 
 

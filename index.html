@@ -77,6 +77,14 @@
           </svg>
         </button>
 
+        <!-- 動画ファイル骨格解析（オフライン後処理） -->
+        <button id="toggle-analyzer-btn" class="nav-icon-btn" aria-label="Analyze Video File" title="Analyze Video File">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4zM8 17H6v-2h2v2zm0-4H6v-2h2v2zm0-4H6V7h2v2zm10 8h-8v-6h8v6z"/>
+          </svg>
+        </button>
+        <input type="file" id="video-file-input" accept="video/webm,video/mp4,video/quicktime,video/*" class="hidden" />
+
         <!-- フルスクリーン切替 -->
         <button id="fullscreen-btn" class="nav-icon-btn" aria-label="Toggle Fullscreen">
           <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
@@ -131,6 +139,143 @@
         <span id="hud-acc" class="hud-item" title="Vertical Acceleration">-</span>
         <span id="hud-vel" class="hud-item" title="Vertical Velocity">-</span>
       </aside>
+
+      <!-- 動画編集型 アノテーションスタジオ（完全ボーダーレス・面のトーン差・プレビュー＆タイムライン） -->
+      <section id="annotation-studio" class="annotation-studio hidden" aria-label="Video Annotation Studio">
+        <!-- 上部ヘッダー -->
+        <header class="studio-header">
+          <div class="studio-meta">
+            <span id="studio-filename" class="studio-title">ANNOTATION STUDIO</span>
+            <span id="studio-timecode" class="studio-timecode">00:00.00 / 00:00.00 (F: 0 / 0)</span>
+          </div>
+
+          <div class="studio-header-actions">
+            <!-- 鏡像反転（FLIP）トグル -->
+            <button id="studio-flip-btn" class="studio-icon-btn" aria-label="Flip Video Horizontal" title="Flip Horizontal (Key: F)">
+              <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                <path d="M15 21h2v-2h-2v2zm4-12h2V7h-2v2zM3 5v14c0 1.1.9 2 2 2h4v-2H5V5h4V3H5c-1.1 0-2 .9-2 2zm16-2v2h2c0-1.1-.9-2-2-2zm-8 20h2V1h-2v22zm8-6h2v-2h-2v2zM15 5h2V3h-2v2zm4 8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2z"/>
+              </svg>
+            </button>
+
+            <!-- トラッキングライン表示切替 -->
+            <button id="studio-toggle-track-btn" class="studio-icon-btn active" aria-label="Toggle Skeleton" title="Toggle Skeleton Lines">
+              <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                <circle cx="12" cy="18" r="2.5" />
+                <circle cx="6" cy="11" r="2" />
+                <circle cx="10" cy="8" r="2" />
+                <circle cx="14" cy="8" r="2" />
+                <circle cx="18" cy="11" r="2" />
+                <path d="M12 18 L6 11 M12 18 L10 8 M12 18 L14 8 M12 18 L18 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </button>
+
+            <!-- 閉じる（✕） -->
+            <button id="studio-close-btn" class="studio-icon-btn" aria-label="Close Studio" title="Close Studio (Esc)">
+              <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- 中央プレビューエリア（動画＋骨格を同一解像度・アスペクト比で完全同期描画） -->
+        <main class="studio-viewport">
+          <canvas id="studio-canvas" class="studio-canvas"></canvas>
+          <div id="studio-flash" class="studio-flash" aria-hidden="true"></div>
+        </main>
+
+        <!-- 下部タイムライン ＆ 操作コントロール -->
+        <footer class="studio-footer">
+          <!-- タイムライン・シークバー ＆ Hitマーカー表示 -->
+          <div class="timeline-container">
+            <div id="timeline-track" class="timeline-track">
+              <!-- 再生進捗バー -->
+              <div id="timeline-progress" class="timeline-progress"></div>
+              <!-- 再生ヘッドピン -->
+              <div id="timeline-playhead" class="timeline-playhead"></div>
+              <!-- ユーザーが設置したHitマーカー（動的にspan.marker-pinが生成される） -->
+              <div id="timeline-markers" class="timeline-markers"></div>
+            </div>
+          </div>
+
+          <!-- コントロールバー -->
+          <div class="studio-controls">
+            <!-- 左: 再生・コマ送りナビゲーション -->
+            <div class="studio-ctrl-group">
+              <!-- 5コマ戻る -->
+              <button id="studio-step-back5-btn" class="ctrl-icon-btn" aria-label="Step Back 5 Frames" title="Step Back 5 Frames (Shift + Left)">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M11 6l-6 6 6 6V6zm7 0l-6 6 6 6V6z"/>
+                </svg>
+              </button>
+              <!-- 1コマ戻る -->
+              <button id="studio-step-back-btn" class="ctrl-icon-btn" aria-label="Step Back 1 Frame" title="Step Back 1 Frame (Left Arrow)">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M14 6l-6 6 6 6V6z"/>
+                </svg>
+              </button>
+              <!-- 再生 / 一時停止 -->
+              <button id="studio-play-btn" class="ctrl-icon-btn play-btn" aria-label="Play / Pause" title="Play / Pause (Space)">
+                <svg id="studio-play-icon" viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                <svg id="studio-pause-icon" viewBox="0 0 24 24" class="btn-svg hidden" aria-hidden="true">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+              </button>
+              <!-- 1コマ進む -->
+              <button id="studio-step-fwd-btn" class="ctrl-icon-btn" aria-label="Step Forward 1 Frame" title="Step Forward 1 Frame (Right Arrow)">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M10 18l6-6-6-6v12z"/>
+                </svg>
+              </button>
+              <!-- 5コマ進む -->
+              <button id="studio-step-fwd5-btn" class="ctrl-icon-btn" aria-label="Step Forward 5 Frames" title="Step Forward 5 Frames (Shift + Right)">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M6 18l6-6-6-6v12zm7-12v12l6-6-6-6z"/>
+                </svg>
+              </button>
+
+              <!-- 速度切り替え（0.25x / 0.5x / 1.0x） -->
+              <div class="studio-speed-group" role="radiogroup" aria-label="Playback Speed">
+                <button class="studio-speed-btn" data-speed="0.25">0.25X</button>
+                <button class="studio-speed-btn" data-speed="0.5">0.5X</button>
+                <button class="studio-speed-btn active" data-speed="1.0">1.0X</button>
+              </div>
+            </div>
+
+            <!-- 中央: HITマーカー設置ボタン -->
+            <div class="studio-ctrl-group marker-center">
+              <button id="studio-mark-hit-btn" class="studio-mark-btn" aria-label="Toggle Hit Marker" title="Toggle Hit Marker (Key: H or M)">
+                <span class="mark-btn-inner">
+                  <span class="mark-circle"></span>
+                  <span class="mark-label">MARK HIT</span>
+                </span>
+              </button>
+              <span id="studio-marker-count" class="studio-marker-count">0 HITS</span>
+            </div>
+
+            <!-- 右: アクション（新規ファイル選択、全消去、CSVダウンロード） -->
+            <div class="studio-ctrl-group">
+              <button id="studio-open-file-btn" class="ctrl-icon-btn" aria-label="Open Another Video" title="Open Video File">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                </svg>
+              </button>
+              <button id="studio-clear-markers-btn" class="ctrl-icon-btn" aria-label="Clear All Markers" title="Clear All Markers">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                </svg>
+              </button>
+              <button id="studio-export-csv-btn" class="ctrl-icon-btn export-btn" aria-label="Export Skeleton CSV" title="Export CSV with Hit Labels">
+                <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+                  <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </footer>
+      </section>
 
       <!-- カメラエラー・ロード中通知（完全ボーダーレス・ミニマルモーダル） -->
       <div id="notice-modal" class="notice-modal hidden">

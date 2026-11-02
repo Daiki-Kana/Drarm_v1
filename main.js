@@ -44,6 +44,40 @@ const recHits = document.getElementById("rec-hits");
 const recDownloadBtn = document.getElementById("rec-download-btn");
 const recSegBtns = document.querySelectorAll(".rec-seg-btn");
 
+// アノテーションスタジオ（動画編集型プレビュー＆タイムライン）関連DOM要素
+const toggleAnalyzerBtn = document.getElementById("toggle-analyzer-btn");
+const videoFileInput = document.getElementById("video-file-input");
+const annotationStudio = document.getElementById("annotation-studio");
+const studioFilename = document.getElementById("studio-filename");
+const studioTimecode = document.getElementById("studio-timecode");
+const studioFlipBtn = document.getElementById("studio-flip-btn");
+const studioToggleTrackBtn = document.getElementById("studio-toggle-track-btn");
+const studioCloseBtn = document.getElementById("studio-close-btn");
+const studioCanvas = document.getElementById("studio-canvas");
+const studioCanvasCtx = studioCanvas ? studioCanvas.getContext("2d") : null;
+const studioFlash = document.getElementById("studio-flash");
+
+const timelineTrack = document.getElementById("timeline-track");
+const timelineProgress = document.getElementById("timeline-progress");
+const timelinePlayhead = document.getElementById("timeline-playhead");
+const timelineMarkers = document.getElementById("timeline-markers");
+
+const studioStepBack5Btn = document.getElementById("studio-step-back5-btn");
+const studioStepBackBtn = document.getElementById("studio-step-back-btn");
+const studioPlayBtn = document.getElementById("studio-play-btn");
+const studioPlayIcon = document.getElementById("studio-play-icon");
+const studioPauseIcon = document.getElementById("studio-pause-icon");
+const studioStepFwdBtn = document.getElementById("studio-step-fwd-btn");
+const studioStepFwd5Btn = document.getElementById("studio-step-fwd5-btn");
+const studioSpeedBtns = document.querySelectorAll(".studio-speed-btn");
+
+const studioMarkHitBtn = document.getElementById("studio-mark-hit-btn");
+const studioMarkerCount = document.getElementById("studio-marker-count");
+
+const studioOpenFileBtn = document.getElementById("studio-open-file-btn");
+const studioClearMarkersBtn = document.getElementById("studio-clear-markers-btn");
+const studioExportCsvBtn = document.getElementById("studio-export-csv-btn");
+
 // ==========================================================================
 // 2. プロシージャル Web Audio ドラム音響エンジン（外部ファイル依存ゼロ）
 // ==========================================================================
@@ -651,6 +685,478 @@ class DatasetRecorder {
 const datasetRecorder = new DatasetRecorder();
 
 // ==========================================================================
+// 6.5. 動画編集型アノテーションスタジオ（骨格追従プレビュー＆Hitマーカー手動設置）
+// ==========================================================================
+let isOfflineAnalyzing = false; // オフラインスタジオ実行中フラグ（カメラ推論の一時停止制御）
+
+class AnnotationStudioController {
+  constructor() {
+    this.video = document.createElement("video");
+    this.video.muted = true;
+    this.video.playsInline = true;
+    this.video.preload = "auto";
+
+    this.file = null;
+    this.fileName = "";
+    this.fps = 60;
+    this.duration = 0;
+    this.totalFrames = 0;
+    this.currentFrame = 0;
+    this.isPlaying = false;
+    this.playbackRate = 1.0;
+    this.isFlipped = false;
+    this.showSkeleton = true;
+
+    this.hitMarkers = new Set(); // ユーザーが設置したHitフレーム番号のSet
+    this.skeletonCache = []; // 各フレームの骨格ランドマーク＆特徴量キャッシュ
+    this.lastInferenceTimestamp = -1.0;
+
+    // スタジオ専用の独立PointFilterトラッカー
+    this.trackers = {
+      Left: new HandTrackerState("Left"),
+      Right: new HandTrackerState("Right")
+    };
+
+    this.animFrameId = null;
+    this.initVideoEvents();
+  }
+
+  initVideoEvents() {
+    this.video.addEventListener("ended", () => {
+      this.pause();
+    });
+  }
+
+  async openStudio(file) {
+    if (!handLandmarker) {
+      alert("Vision model is still loading. Please wait a moment.");
+      return;
+    }
+
+    this.pause();
+    isOfflineAnalyzing = true; // カメラ推論を停止
+    this.file = file;
+    this.fileName = file.name.replace(/\.[^/.]+$/, "");
+    this.hitMarkers.clear();
+    this.skeletonCache = [];
+    this.lastInferenceTimestamp = -1.0;
+    this.trackers.Left.reset();
+    this.trackers.Right.reset();
+
+    if (studioFilename) studioFilename.textContent = file.name;
+    if (document.getElementById("annotation-studio")) {
+      document.getElementById("annotation-studio").classList.remove("hidden");
+    }
+
+    this.video.src = URL.createObjectURL(file);
+
+    try {
+      // 1. メタデータと動画フレームピクセル展開の待機
+      await new Promise((resolve, reject) => {
+        const onLoaded = () => {
+          if (this.video.readyState >= 2) {
+            resolve();
+          } else {
+            this.video.addEventListener("loadeddata", () => resolve(), { once: true });
+          }
+        };
+        if (this.video.readyState >= 2) {
+          resolve();
+        } else if (this.video.readyState >= 1) {
+          onLoaded();
+        } else {
+          this.video.addEventListener("loadedmetadata", onLoaded, { once: true });
+        }
+        this.video.onerror = () => reject(new Error("Video failed to load."));
+      });
+
+      this.duration = this.video.duration;
+      if (!this.duration || isNaN(this.duration) || this.duration <= 0) {
+        throw new Error("Invalid video duration");
+      }
+
+      this.totalFrames = Math.max(1, Math.floor(this.duration * this.fps));
+      this.skeletonCache = new Array(this.totalFrames).fill(null);
+
+      // スタジオではコマ送り・シークでも100%確実に検出するためIMAGEモードへ切替
+      if (handLandmarker && typeof handLandmarker.setOptions === "function") {
+        await handLandmarker.setOptions({ runningMode: "IMAGE" });
+      }
+
+      // Canvas解像度をビデオ解像度と1:1で完全同期（ズレを完全に排除）
+      const vw = this.video.videoWidth || 1280;
+      const vh = this.video.videoHeight || 720;
+      if (studioCanvas) {
+        studioCanvas.width = vw;
+        studioCanvas.height = vh;
+        studioCanvas.classList.toggle("flipped", this.isFlipped);
+      }
+
+      this.currentFrame = 0;
+      await this.seekToFrame(0);
+      this.updateMarkerUi();
+    } catch (err) {
+      console.error("[STUDIO] Open error:", err);
+      alert(`Could not open video: ${err.message}`);
+      await this.closeStudio();
+    }
+  }
+
+  async closeStudio() {
+    this.pause();
+    if (this.video.src) {
+      URL.revokeObjectURL(this.video.src);
+      this.video.src = "";
+    }
+    const studioEl = document.getElementById("annotation-studio");
+    if (studioEl) studioEl.classList.add("hidden");
+
+    // 通常のリアルタイムカメラ推論用にVIDEOモードへ復帰
+    if (handLandmarker && typeof handLandmarker.setOptions === "function") {
+      try {
+        await handLandmarker.setOptions({ runningMode: "VIDEO" });
+      } catch (e) {}
+    }
+
+    lastVideoTimestamp = -1; // タイムスタンプリセット
+    isOfflineAnalyzing = false; // カメラ推論の再開
+    if (canvasCtx) canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  toggleFlip() {
+    this.isFlipped = !this.isFlipped;
+    if (studioCanvas) {
+      studioCanvas.classList.toggle("flipped", this.isFlipped);
+    }
+    if (studioFlipBtn) {
+      studioFlipBtn.classList.toggle("active", this.isFlipped);
+    }
+  }
+
+  toggleSkeleton() {
+    this.showSkeleton = !this.showSkeleton;
+    if (studioToggleTrackBtn) {
+      studioToggleTrackBtn.classList.toggle("active", this.showSkeleton);
+    }
+    this.renderFrame(false);
+  }
+
+  setSpeed(speed) {
+    this.playbackRate = speed;
+    this.video.playbackRate = speed;
+    studioSpeedBtns.forEach((b) => {
+      b.classList.toggle("active", parseFloat(b.dataset.speed) === speed);
+    });
+  }
+
+  play() {
+    if (this.isPlaying) return;
+    this.isPlaying = true;
+    this.video.playbackRate = this.playbackRate;
+    this.video.play();
+
+    if (studioPlayIcon) studioPlayIcon.classList.add("hidden");
+    if (studioPauseIcon) studioPauseIcon.classList.remove("hidden");
+
+    const loop = () => {
+      if (!this.isPlaying) return;
+      const f = Math.floor(this.video.currentTime * this.fps);
+      if (f !== this.currentFrame) {
+        this.currentFrame = Math.min(this.totalFrames - 1, Math.max(0, f));
+        this.renderFrame(true);
+      }
+      this.animFrameId = requestAnimationFrame(loop);
+    };
+    this.animFrameId = requestAnimationFrame(loop);
+  }
+
+  pause() {
+    this.isPlaying = false;
+    this.video.pause();
+    if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+
+    if (studioPlayIcon) studioPlayIcon.classList.remove("hidden");
+    if (studioPauseIcon) studioPauseIcon.classList.add("hidden");
+  }
+
+  togglePlay() {
+    if (this.isPlaying) this.pause();
+    else this.play();
+  }
+
+  async seekToFrame(frameIndex) {
+    const clamped = Math.max(0, Math.min(this.totalFrames - 1, frameIndex));
+    this.currentFrame = clamped;
+    const targetTime = clamped / this.fps;
+
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.video.removeEventListener("seeked", onSeeked);
+        resolve();
+      }, 500);
+      const onSeeked = () => {
+        clearTimeout(timeout);
+        this.video.removeEventListener("seeked", onSeeked);
+        resolve();
+      };
+      this.video.addEventListener("seeked", onSeeked, { once: true });
+      this.video.currentTime = targetTime;
+    });
+
+    this.renderFrame(true);
+  }
+
+  step(delta) {
+    this.pause();
+    this.seekToFrame(this.currentFrame + delta);
+  }
+
+  /**
+   * 現在のフレームを描画し、必要に応じてMediaPipe推論を実行＆キャッシュ
+   */
+  renderFrame(allowInference = true) {
+    if (!studioCanvas || !studioCanvasCtx) return;
+
+    const cw = studioCanvas.width;
+    const ch = studioCanvas.height;
+    const f = this.currentFrame;
+    const targetTime = f / this.fps;
+
+    // 1. ビデオフレームを描画
+    studioCanvasCtx.clearRect(0, 0, cw, ch);
+    studioCanvasCtx.drawImage(this.video, 0, 0, cw, ch);
+
+    // 2. 骨格トラッキング（キャッシュ確認または新規推論）
+    let frameData = this.skeletonCache[f];
+
+    if (!frameData && allowInference && handLandmarker) {
+      try {
+        let results = null;
+
+        // IMAGEモードのときはCanvas画像からタイムスタンプなしで直接推論
+        if (typeof handLandmarker.detect === "function") {
+          results = handLandmarker.detect(studioCanvas);
+        } else if (typeof handLandmarker.detectForVideo === "function") {
+          const calculatedMs = Math.round(targetTime * 1000);
+          const timestampMs = Math.max(this.lastInferenceTimestamp + 1.0, calculatedMs);
+          this.lastInferenceTimestamp = timestampMs;
+          results = handLandmarker.detectForVideo(studioCanvas, timestampMs);
+        }
+
+        if (results && results.landmarks && results.landmarks.length > 0) {
+          const hands = [];
+          for (let i = 0; i < results.landmarks.length; i++) {
+            const landmarks = results.landmarks[i];
+            let handedness = "Right";
+            if (results.handednesses?.[i]?.[0]) {
+              handedness = results.handednesses[i][0].categoryName;
+            } else {
+              handedness = i === 0 ? "Right" : "Left";
+            }
+
+            // 手の3D基準長 L（手首〜人差し指MCP間）
+            const dx05 = landmarks[5].x - landmarks[0].x;
+            const dy05 = landmarks[5].y - landmarks[0].y;
+            const dz05 = (landmarks[5].z ?? 0) - (landmarks[0].z ?? 0);
+            const L = Math.hypot(dx05, dy05, dz05) || 0.001;
+
+            // 相対沈み込み変位 ry
+            const ry = (landmarks[8].y - landmarks[5].y) / L;
+
+            // 垂直移動差分 dy
+            let dy = 0;
+            if (f > 0 && this.skeletonCache[f - 1]?.hands) {
+              const prev = this.skeletonCache[f - 1].hands.find((h) => h.handedness === handedness);
+              if (prev) {
+                dy = (landmarks[8].y - prev.landmarks[8].y) * ch;
+              }
+            }
+
+            // 動画アノテーションでは平滑化履歴によるズレを防ぎ、現在コマの手の位置と1:1完全一致
+            const trackResult = {
+              smoothTip: { x: landmarks[8].x * cw, y: landmarks[8].y * ch },
+              smoothMcp: { x: landmarks[5].x * cw, y: landmarks[5].y * ch },
+              smoothPip: { x: landmarks[6].x * cw, y: landmarks[6].y * ch },
+              smoothDip: { x: landmarks[7].x * cw, y: landmarks[7].y * ch },
+              ry,
+              dy,
+              L,
+              isHit: false
+            };
+
+            hands.push({ handedness, landmarks, trackResult, tapState: "IDLE" });
+          }
+          frameData = { hands, timestampMs: Math.round(targetTime * 1000) };
+          this.skeletonCache[f] = frameData;
+        }
+      } catch (err) {
+        console.warn("[STUDIO] Inference skipped for frame:", f, err);
+      }
+    }
+
+    // 3. 骨格のオーバーレイ描画
+    if (this.showSkeleton && frameData && frameData.hands) {
+      for (const h of frameData.hands) {
+        drawPiarnoHand(h.landmarks, cw, ch, h.trackResult, h.tapState, studioCanvasCtx);
+      }
+    }
+
+    // 4. UIメタデータの更新
+    const curSec = targetTime.toFixed(2);
+    const durSec = this.duration.toFixed(2);
+    if (studioTimecode) {
+      studioTimecode.textContent = `${curSec}s / ${durSec}s (F: ${f} / ${this.totalFrames - 1})`;
+    }
+
+    const progressPct = this.totalFrames > 1 ? (f / (this.totalFrames - 1)) * 100 : 0;
+    if (timelineProgress) timelineProgress.style.width = `${progressPct}%`;
+    if (timelinePlayhead) timelinePlayhead.style.left = `${progressPct}%`;
+
+    const isMarked = this.hitMarkers.has(f);
+    if (studioMarkHitBtn) {
+      studioMarkHitBtn.classList.toggle("is-marked", isMarked);
+      const labelEl = studioMarkHitBtn.querySelector(".mark-label");
+      if (labelEl) labelEl.textContent = isMarked ? "UNMARK HIT" : "MARK HIT";
+    }
+  }
+
+  /**
+   * 現在フレームにHitマーカーを設置 / 削除
+   */
+  toggleHitMarker(frame = this.currentFrame) {
+    const isMarked = this.hitMarkers.has(frame);
+    if (isMarked) {
+      this.hitMarkers.delete(frame);
+    } else {
+      this.hitMarkers.add(frame);
+      // ドラム試聴音
+      drumEngine.ensureRunning();
+      drumEngine.playSnare(1.2);
+      // 白熱フラッシュ
+      if (studioFlash) {
+        studioFlash.classList.add("flash-active");
+        setTimeout(() => studioFlash.classList.remove("flash-active"), 120);
+      }
+    }
+
+    this.renderFrame(false);
+    this.updateMarkerUi();
+  }
+
+  clearAllMarkers() {
+    if (this.hitMarkers.size === 0) return;
+    this.hitMarkers.clear();
+    this.renderFrame(false);
+    this.updateMarkerUi();
+  }
+
+  updateMarkerUi() {
+    if (studioMarkerCount) {
+      studioMarkerCount.textContent = `${this.hitMarkers.size} HITS`;
+    }
+
+    if (!timelineMarkers) return;
+    timelineMarkers.innerHTML = "";
+
+    const total = this.totalFrames > 1 ? this.totalFrames - 1 : 1;
+    this.hitMarkers.forEach((f) => {
+      const pin = document.createElement("span");
+      pin.className = "marker-pin";
+      pin.style.left = `${(f / total) * 100}%`;
+      timelineMarkers.appendChild(pin);
+    });
+  }
+
+  /**
+   * 未推論のフレームを全自動シーク補完して、手動Hitラベル付きの全フレーム骨格CSVを書き出し
+   */
+  async exportCsv() {
+    if (!this.file || this.totalFrames <= 0) return;
+
+    this.pause();
+    updateHitBadge("EXPORTING CSV", 1.0);
+
+    const cw = studioCanvas.width;
+    const ch = studioCanvas.height;
+
+    // 未推論フレームがあれば順番に推論補完
+    for (let f = 0; f < this.totalFrames; f++) {
+      if (!this.skeletonCache[f]) {
+        await this.seekToFrame(f);
+      }
+    }
+
+    const records = [];
+    for (let f = 0; f < this.totalFrames; f++) {
+      const targetTime = f / this.fps;
+      const isHit = this.hitMarkers.has(f) ? 1 : 0;
+      const frameData = this.skeletonCache[f];
+
+      if (frameData && frameData.hands && frameData.hands.length > 0) {
+        for (const h of frameData.hands) {
+          const lms = h.landmarks;
+          const tr = h.trackResult;
+          records.push({
+            frame: f,
+            timestamp_ms: frameData.timestampMs,
+            time_sec: targetTime.toFixed(3),
+            hand: h.handedness,
+            wrist_x: lms[0].x.toFixed(5),
+            wrist_y: lms[0].y.toFixed(5),
+            mcp_x: lms[5].x.toFixed(5),
+            mcp_y: lms[5].y.toFixed(5),
+            pip_x: lms[6].x.toFixed(5),
+            pip_y: lms[6].y.toFixed(5),
+            tip_x: lms[8].x.toFixed(5),
+            tip_y: lms[8].y.toFixed(5),
+            smooth_tip_x: (tr.smoothTip.x / cw).toFixed(5),
+            smooth_tip_y: (tr.smoothTip.y / ch).toFixed(5),
+            ry: tr.ry.toFixed(4),
+            dy: tr.dy.toFixed(2),
+            L: tr.L.toFixed(5),
+            is_hit: isHit
+          });
+        }
+      } else {
+        records.push({
+          frame: f,
+          timestamp_ms: Math.round(targetTime * 1000),
+          time_sec: targetTime.toFixed(3),
+          hand: "None",
+          wrist_x: "", wrist_y: "",
+          mcp_x: "", mcp_y: "",
+          pip_x: "", pip_y: "",
+          tip_x: "", tip_y: "",
+          smooth_tip_x: "", smooth_tip_y: "",
+          ry: "0.0000", dy: "0.00", L: "0.00000",
+          is_hit: isHit
+        });
+      }
+    }
+
+    const headers = Object.keys(records[0]);
+    const csvLines = [headers.join(",")];
+    for (const r of records) {
+      csvLines.push(headers.map((k) => r[k]).join(","));
+    }
+    const csvString = csvLines.join("\n");
+    const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+    a.download = `annotated_${this.fileName}_${this.fps}fps_${this.hitMarkers.size}hits_${nowStr}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    updateHitBadge("CSV EXPORTED", 1.2);
+  }
+}
+
+const annotationStudioController = new AnnotationStudioController();
+
+// ==========================================================================
 // 7. ドラム発音・ゾーン判定・リップルエフェクト
 // ==========================================================================
 function updateHitBadge(label, intensity) {
@@ -880,6 +1386,7 @@ function schedulePredictLoop() {
 
 function processVideoFrame(frameTime) {
   if (!isVideoReady || !handLandmarker) return;
+  if (isOfflineAnalyzing) return; // オフライン動画解析中はカメラ推論を一時停止
   if (video.paused || video.ended || video.readyState < 2) return;
   if (isPredicting) return;
   isPredicting = true;
@@ -951,58 +1458,65 @@ function processVideoFrame(frameTime) {
 /**
  * Piarno完全準拠の骨格＆指先マーカー描画
  */
-function drawPiarnoHand(landmarks, cw, ch, trackResult, tapState) {
-  canvasCtx.save();
-  canvasCtx.lineCap = "round";
-  canvasCtx.lineJoin = "round";
+function drawPiarnoHand(landmarks, cw, ch, trackResult, tapState, ctx = canvasCtx) {
+  if (!ctx) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
-  // 1. 他の指・手のひら（Piarnoと同じく極めて薄いグレースケールで描画）
-  canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.12)";
-  canvasCtx.lineWidth = 1;
+  // 背景色に埋もれないよう、黒シャドウを全体に適用
+  ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetX = 1;
+  ctx.shadowOffsetY = 1;
+
+  // 1. 他の指・手のひら（視認性の高い白ライン）
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+  ctx.lineWidth = 2.0;
 
   OTHER_CONNECTIONS.forEach(([startIdx, endIdx]) => {
     const p1 = landmarks[startIdx];
     const p2 = landmarks[endIdx];
-    canvasCtx.beginPath();
-    canvasCtx.moveTo(p1.x * cw, p1.y * ch);
-    canvasCtx.lineTo(p2.x * cw, p2.y * ch);
-    canvasCtx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p1.x * cw, p1.y * ch);
+    ctx.lineTo(p2.x * cw, p2.y * ch);
+    ctx.stroke();
   });
 
-  // 人差し指以外の関節点（極小薄グレー）
+  // 他の指の全関節点（白丸）
   landmarks.forEach((p, idx) => {
     if (INDEX_LANDMARK_INDICES.includes(idx)) return;
-    canvasCtx.beginPath();
-    canvasCtx.arc(p.x * cw, p.y * ch, 2, 0, Math.PI * 2);
-    canvasCtx.fillStyle = "rgba(255, 255, 255, 0.15)";
-    canvasCtx.fill();
+    ctx.beginPath();
+    ctx.arc(p.x * cw, p.y * ch, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.fill();
   });
 
   const { smoothMcp, smoothPip, smoothDip, smoothTip } = trackResult;
 
-  // 2. 人差し指の骨格ライン（ブレのない独立PointFilter平滑化ライン）
-  canvasCtx.strokeStyle = "#ffffff";
-  canvasCtx.lineWidth = 3;
-  canvasCtx.beginPath();
-  canvasCtx.moveTo(smoothMcp.x, smoothMcp.y);
-  canvasCtx.lineTo(smoothPip.x, smoothPip.y);
-  canvasCtx.lineTo(smoothDip.x, smoothDip.y);
-  canvasCtx.lineTo(smoothTip.x, smoothTip.y);
-  canvasCtx.stroke();
+  // 2. 人差し指の骨格ライン（主動打鍵指として強力ハイライト）
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 4.2;
+  ctx.beginPath();
+  ctx.moveTo(smoothMcp.x, smoothMcp.y);
+  ctx.lineTo(smoothPip.x, smoothPip.y);
+  ctx.lineTo(smoothDip.x, smoothDip.y);
+  ctx.lineTo(smoothTip.x, smoothTip.y);
+  ctx.stroke();
 
   // 3. 人差し指関節点（5: MCP, 6: PIP, 7: DIP）白丸
   [smoothMcp, smoothPip, smoothDip].forEach((pt) => {
-    canvasCtx.beginPath();
-    canvasCtx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
-    canvasCtx.fillStyle = "#ffffff";
-    canvasCtx.fill();
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 5.0, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
   });
 
   // 4. 人差し指先端（TIP: Landmark 8）のPiarno十字ターゲット丸マーク描画
   const isTouched = tapState === "TOUCHED";
-  drawTipTargetMark(smoothTip.x, smoothTip.y, isTouched);
+  drawTipTargetMark(smoothTip.x, smoothTip.y, isTouched, ctx);
 
-  canvasCtx.restore();
+  ctx.restore();
 }
 
 /**
@@ -1010,49 +1524,51 @@ function drawPiarnoHand(landmarks, cw, ch, trackResult, tapState) {
  * @param {number} x TIP X座標
  * @param {number} y TIP Y座標
  * @param {boolean} isTouched 机面接触中フラグ（白熱グロー表示）
+ * @param {CanvasRenderingContext2D} ctx 描画先コンテキスト
  */
-function drawTipTargetMark(x, y, isTouched = false) {
-  canvasCtx.save();
+function drawTipTargetMark(x, y, isTouched = false, ctx = canvasCtx) {
+  if (!ctx) return;
+  ctx.save();
 
   if (isTouched) {
-    canvasCtx.shadowColor = "#ffffff";
-    canvasCtx.shadowBlur = 24;
+    ctx.shadowColor = "#ffffff";
+    ctx.shadowBlur = 24;
   }
 
   // 外側のターゲットサークル
-  const outerR = isTouched ? 13 : 9;
-  canvasCtx.beginPath();
-  canvasCtx.arc(x, y, outerR, 0, Math.PI * 2);
-  canvasCtx.strokeStyle = "#ffffff";
-  canvasCtx.lineWidth = isTouched ? 2.5 : 2.0;
-  canvasCtx.stroke();
+  const outerR = isTouched ? 14 : 10;
+  ctx.beginPath();
+  ctx.arc(x, y, outerR, 0, Math.PI * 2);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = isTouched ? 2.5 : 2.0;
+  ctx.stroke();
 
   // 十字ターゲットインジケータ（水平・垂直線）
   const crossInner = isTouched ? 6 : 5;
   const crossOuter = isTouched ? 16 : 13;
-  canvasCtx.strokeStyle = "#ffffff";
-  canvasCtx.lineWidth = 1.5;
-  canvasCtx.beginPath();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
   // 水平線
-  canvasCtx.moveTo(x - crossOuter, y);
-  canvasCtx.lineTo(x - crossInner, y);
-  canvasCtx.moveTo(x + crossInner, y);
-  canvasCtx.lineTo(x + crossOuter, y);
+  ctx.moveTo(x - crossOuter, y);
+  ctx.lineTo(x - crossInner, y);
+  ctx.moveTo(x + crossInner, y);
+  ctx.lineTo(x + crossOuter, y);
   // 垂直線
-  canvasCtx.moveTo(x, y - crossOuter);
-  canvasCtx.lineTo(x, y - crossInner);
-  canvasCtx.moveTo(x, y + crossInner);
-  canvasCtx.lineTo(x, y + crossOuter);
-  canvasCtx.stroke();
+  ctx.moveTo(x, y - crossOuter);
+  ctx.lineTo(x, y - crossInner);
+  ctx.moveTo(x, y + crossInner);
+  ctx.lineTo(x, y + crossOuter);
+  ctx.stroke();
 
   // 中心ターゲット丸
-  const centerR = isTouched ? 5.0 : 3.5;
-  canvasCtx.beginPath();
-  canvasCtx.arc(x, y, centerR, 0, Math.PI * 2);
-  canvasCtx.fillStyle = "#ffffff";
-  canvasCtx.fill();
+  const centerR = isTouched ? 5.5 : 4.0;
+  ctx.beginPath();
+  ctx.arc(x, y, centerR, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
 
-  canvasCtx.restore();
+  ctx.restore();
 }
 
 // ==========================================================================
@@ -1210,10 +1726,183 @@ window.addEventListener("keyup", (e) => {
   }
 });
 
+// アノテーションスタジオ起動（ナビゲーションボタン）
+if (toggleAnalyzerBtn && videoFileInput) {
+  toggleAnalyzerBtn.addEventListener("click", () => {
+    videoFileInput.click();
+  });
+}
+
+// 別動画を開くボタン
+if (studioOpenFileBtn && videoFileInput) {
+  studioOpenFileBtn.addEventListener("click", () => {
+    videoFileInput.click();
+  });
+}
+
+// ファイル選択時のスタジオオープン
+if (videoFileInput) {
+  videoFileInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      annotationStudioController.openStudio(file);
+    }
+    videoFileInput.value = ""; // 同一ファイルを再選択可能にする
+  });
+}
+
+// スタジオを閉じる
+if (studioCloseBtn) {
+  studioCloseBtn.addEventListener("click", () => {
+    annotationStudioController.closeStudio();
+  });
+}
+
+// 再生 / 一時停止
+if (studioPlayBtn) {
+  studioPlayBtn.addEventListener("click", () => {
+    annotationStudioController.togglePlay();
+  });
+}
+
+// コマ送り / コマ戻しボタン
+if (studioStepBackBtn) {
+  studioStepBackBtn.addEventListener("click", () => {
+    annotationStudioController.step(-1);
+  });
+}
+
+if (studioStepFwdBtn) {
+  studioStepFwdBtn.addEventListener("click", () => {
+    annotationStudioController.step(1);
+  });
+}
+
+if (studioStepBack5Btn) {
+  studioStepBack5Btn.addEventListener("click", () => {
+    annotationStudioController.step(-5);
+  });
+}
+
+if (studioStepFwd5Btn) {
+  studioStepFwd5Btn.addEventListener("click", () => {
+    annotationStudioController.step(5);
+  });
+}
+
+// HITマーカー設置ボタン
+if (studioMarkHitBtn) {
+  studioMarkHitBtn.addEventListener("click", () => {
+    annotationStudioController.toggleHitMarker();
+  });
+}
+
+// 全マーカー消去
+if (studioClearMarkersBtn) {
+  studioClearMarkersBtn.addEventListener("click", () => {
+    annotationStudioController.clearAllMarkers();
+  });
+}
+
+// CSVエクスポート
+if (studioExportCsvBtn) {
+  studioExportCsvBtn.addEventListener("click", () => {
+    annotationStudioController.exportCsv();
+  });
+}
+
+// 鏡像反転（FLIP）トグル
+if (studioFlipBtn) {
+  studioFlipBtn.addEventListener("click", () => {
+    annotationStudioController.toggleFlip();
+  });
+}
+
+// 骨格ライン表示切替
+if (studioToggleTrackBtn) {
+  studioToggleTrackBtn.addEventListener("click", () => {
+    annotationStudioController.toggleSkeleton();
+  });
+}
+
+// 再生速度切替
+studioSpeedBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const spd = parseFloat(btn.dataset.speed) || 1.0;
+    annotationStudioController.setSpeed(spd);
+  });
+});
+
+// タイムラインのクリック ＆ ドラッグシーク
+let isTimelineDragging = false;
+function handleTimelinePointer(e) {
+  if (!timelineTrack || !annotationStudioController.file || annotationStudioController.totalFrames <= 0) return;
+  const rect = timelineTrack.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const targetFrame = Math.round(ratio * (annotationStudioController.totalFrames - 1));
+  annotationStudioController.seekToFrame(targetFrame);
+}
+
+if (timelineTrack) {
+  timelineTrack.addEventListener("pointerdown", (e) => {
+    isTimelineDragging = true;
+    annotationStudioController.pause();
+    handleTimelinePointer(e);
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (isTimelineDragging) handleTimelinePointer(e);
+  });
+  window.addEventListener("pointerup", () => {
+    isTimelineDragging = false;
+  });
+}
+
+// 動画ファイルのドラッグ＆ドロップ受け入れ
+window.addEventListener("dragover", (e) => {
+  e.preventDefault();
+});
+
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (file && (file.type.startsWith("video/") || file.name.endsWith(".webm") || file.name.endsWith(".mp4"))) {
+    annotationStudioController.openStudio(file);
+  }
+});
+
+// スタジオアクティブ時のキーボードショートカット
+window.addEventListener("keydown", (e) => {
+  const isStudioOpen = annotationStudio && !annotationStudio.classList.contains("hidden");
+  if (!isStudioOpen) return;
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    e.stopPropagation();
+    annotationStudioController.togglePlay();
+  } else if (e.code === "ArrowLeft") {
+    e.preventDefault();
+    annotationStudioController.step(e.shiftKey ? -5 : -1);
+  } else if (e.code === "ArrowRight") {
+    e.preventDefault();
+    annotationStudioController.step(e.shiftKey ? 5 : 1);
+  } else if (e.code === "KeyH" || e.code === "KeyM") {
+    e.preventDefault();
+    annotationStudioController.toggleHitMarker();
+  } else if (e.code === "KeyF") {
+    e.preventDefault();
+    annotationStudioController.toggleFlip();
+  } else if (e.code === "Escape") {
+    e.preventDefault();
+    annotationStudioController.closeStudio();
+  }
+}, true);
+
 // デバッグ用グローバル参照
 window.triggerDrumHit = triggerDrumHit;
 window.drumEngine = drumEngine;
 window.datasetRecorder = datasetRecorder;
+window.annotationStudioController = annotationStudioController;
 
 // アプリケーション起動
 async function main() {
