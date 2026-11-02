@@ -34,6 +34,16 @@ const hudVel = document.getElementById("hud-vel");
 const noticeModal = document.getElementById("notice-modal");
 const noticeText = document.getElementById("notice-text");
 
+// 録画モード関連DOM要素
+const toggleRecorderBtn = document.getElementById("toggle-recorder-btn");
+const recorderPanel = document.getElementById("recorder-panel");
+const recActionBtn = document.getElementById("rec-action-btn");
+const recTime = document.getElementById("rec-time");
+const recFrames = document.getElementById("rec-frames");
+const recHits = document.getElementById("rec-hits");
+const recDownloadBtn = document.getElementById("rec-download-btn");
+const recSegBtns = document.querySelectorAll(".rec-seg-btn");
+
 // ==========================================================================
 // 2. プロシージャル Web Audio ドラム音響エンジン（外部ファイル依存ゼロ）
 // ==========================================================================
@@ -459,6 +469,238 @@ async function loadPiarnoDataset() {
     console.warn("[DATASET] Using default biomechanical thresholds:", err);
   }
 }
+
+// ==========================================================================
+// 4.5 学習用データセットレコーダー（全指先＋手首の時系列CSV記録・アノテーション）
+// ==========================================================================
+class DatasetRecorder {
+  constructor() {
+    this.isRecording = false;
+    this.sessionType = "tap"; // "tap", "neg_air", "neg_idle", "neg_wrist"
+    this.targetHand = "Right"; // "Right", "Left", "Both"
+    this.records = [];
+    this.startTime = 0;
+    this.frameCount = 0;
+    this.hitCount = 0;
+    this.lastCsvContent = null;
+    this.lastFileName = null;
+    this.isSpacePressed = false;
+
+    // 前フレームの手首・指先Y座標（速度計算用）
+    this.prevWristY = {};
+    this.prevTipY = {};
+  }
+
+  start() {
+    this.isRecording = true;
+    this.records = [];
+    this.startTime = performance.now();
+    this.frameCount = 0;
+    this.hitCount = 0;
+    this.prevWristY = {};
+    this.prevTipY = {};
+    this.updateUI();
+    updateHitBadge("REC START", 1.2);
+  }
+
+  stop() {
+    if (!this.isRecording) return;
+    this.isRecording = false;
+    this.updateUI();
+    this.exportCsv();
+  }
+
+  toggle() {
+    if (this.isRecording) {
+      this.stop();
+    } else {
+      this.start();
+    }
+  }
+
+  /**
+   * 毎フレームの全指先・手首・動的特徴量の記録
+   */
+  recordFrame(handedness, landmarks, detectResult, timestampMs, cw, ch) {
+    if (!this.isRecording) return;
+    if (this.targetHand !== "Both" && this.targetHand !== handedness) return;
+
+    // 1. 手首（Landmark 0）
+    const wrist = landmarks[0];
+    const wristX = wrist.x * cw;
+    const wristY = wrist.y * ch;
+    const wristZ = wrist.z;
+
+    // 2. 5指の付け根 MCP（2: 親指, 5: 人差し指, 9: 中指, 13: 薬指, 17: 小指）
+    const mcp = {
+      thumb: landmarks[2],
+      index: landmarks[5],
+      middle: landmarks[9],
+      ring: landmarks[13],
+      pinky: landmarks[17]
+    };
+
+    // 3. 5指の先端 TIP（4: 親指, 8: 人差し指, 12: 中指, 16: 薬指, 20: 小指）
+    const tip = {
+      thumb: landmarks[4],
+      index: landmarks[8],
+      middle: landmarks[12],
+      ring: landmarks[16],
+      pinky: landmarks[20]
+    };
+
+    // 打鍵主軸指先（人差し指と中指の安定幾何中心）
+    const leadTipX = (tip.index.x + tip.middle.x) * 0.5 * cw;
+    const leadTipY = (tip.index.y + tip.middle.y) * 0.5 * ch;
+
+    // 手首と主指先の垂直変位
+    const prevWY = this.prevWristY[handedness] ?? wristY;
+    const prevTY = this.prevTipY[handedness] ?? leadTipY;
+    const wristDy = wristY - prevWY;
+    const tipDy = leadTipY - prevTY;
+    this.prevWristY[handedness] = wristY;
+    this.prevTipY[handedness] = leadTipY;
+
+    // 手の3D基準スケール L（手首〜中指MCP間の距離）
+    const dxL = (mcp.middle.x - wrist.x);
+    const dyL = (mcp.middle.y - wrist.y);
+    const dzL = (mcp.middle.z - wrist.z);
+    const handScaleL = Math.max(0.001, Math.sqrt(dxL * dxL + dyL * dyL + dzL * dzL));
+
+    // 指先と手首の相対高低差（机衝突時に指先が止まり手首が下がるのを捉える最重要パラメータ）
+    const relTipWristY = (leadTipY - wristY) / (ch * handScaleL);
+
+    // 打鍵ラベルの判定
+    let isHit = 0;
+    if (this.sessionType === "tap") {
+      if (this.isSpacePressed || detectResult.isHit) {
+        isHit = 1;
+        this.hitCount++;
+        this.flashHitUi();
+      }
+    } else {
+      isHit = 0; // neg_* セッションは常にゼロ
+    }
+
+    this.frameCount++;
+
+    // 1行のレコードを蓄積
+    this.records.push({
+      timestamp: Math.round(timestampMs),
+      hand: handedness,
+      session_type: this.sessionType,
+      // 手首
+      wrist_x: wrist.x.toFixed(5),
+      wrist_y: wrist.y.toFixed(5),
+      wrist_z: wrist.z.toFixed(5),
+      wrist_dy: wristDy.toFixed(2),
+      // 5指 MCP
+      thumb_mcp_x: mcp.thumb.x.toFixed(5),
+      thumb_mcp_y: mcp.thumb.y.toFixed(5),
+      thumb_mcp_z: mcp.thumb.z.toFixed(5),
+      index_mcp_x: mcp.index.x.toFixed(5),
+      index_mcp_y: mcp.index.y.toFixed(5),
+      index_mcp_z: mcp.index.z.toFixed(5),
+      middle_mcp_x: mcp.middle.x.toFixed(5),
+      middle_mcp_y: mcp.middle.y.toFixed(5),
+      middle_mcp_z: mcp.middle.z.toFixed(5),
+      ring_mcp_x: mcp.ring.x.toFixed(5),
+      ring_mcp_y: mcp.ring.y.toFixed(5),
+      ring_mcp_z: mcp.ring.z.toFixed(5),
+      pinky_mcp_x: mcp.pinky.x.toFixed(5),
+      pinky_mcp_y: mcp.pinky.y.toFixed(5),
+      pinky_mcp_z: mcp.pinky.z.toFixed(5),
+      // 5指 TIP
+      thumb_tip_x: tip.thumb.x.toFixed(5),
+      thumb_tip_y: tip.thumb.y.toFixed(5),
+      thumb_tip_z: tip.thumb.z.toFixed(5),
+      index_tip_x: tip.index.x.toFixed(5),
+      index_tip_y: tip.index.y.toFixed(5),
+      index_tip_z: tip.index.z.toFixed(5),
+      middle_tip_x: tip.middle.x.toFixed(5),
+      middle_tip_y: tip.middle.y.toFixed(5),
+      middle_tip_z: tip.middle.z.toFixed(5),
+      ring_tip_x: tip.ring.x.toFixed(5),
+      ring_tip_y: tip.ring.y.toFixed(5),
+      ring_tip_z: tip.ring.z.toFixed(5),
+      pinky_tip_x: tip.pinky.x.toFixed(5),
+      pinky_tip_y: tip.pinky.y.toFixed(5),
+      pinky_tip_z: tip.pinky.z.toFixed(5),
+      // 動的・幾何学的特徴量
+      lead_tip_x: (leadTipX / cw).toFixed(5),
+      lead_tip_y: (leadTipY / ch).toFixed(5),
+      lead_dy: tipDy.toFixed(2),
+      lead_stroke: detectResult.stroke.toFixed(2),
+      hand_scale_l: handScaleL.toFixed(5),
+      rel_tip_wrist_y: relTipWristY.toFixed(4),
+      // 正解ラベル
+      is_hit: isHit
+    });
+
+    this.updateMetrics();
+  }
+
+  updateMetrics() {
+    const elapsed = ((performance.now() - this.startTime) / 1000).toFixed(1);
+    if (recTime) recTime.textContent = `${elapsed}s`;
+    if (recFrames) recFrames.textContent = `${this.frameCount}f`;
+    if (recHits) recHits.textContent = `${this.hitCount} hits`;
+  }
+
+  flashHitUi() {
+    if (recHits) {
+      recHits.classList.add("active-hit");
+      setTimeout(() => {
+        if (recHits) recHits.classList.remove("active-hit");
+      }, 100);
+    }
+  }
+
+  updateUI() {
+    if (recActionBtn) {
+      recActionBtn.classList.toggle("recording", this.isRecording);
+      recActionBtn.title = this.isRecording ? "Stop Recording (Shortcut: R)" : "Start Recording (Shortcut: R)";
+    }
+    if (recDownloadBtn) {
+      recDownloadBtn.classList.toggle("disabled", this.records.length === 0);
+    }
+  }
+
+  exportCsv() {
+    if (this.records.length === 0) return;
+
+    const headers = Object.keys(this.records[0]);
+    const csvLines = [headers.join(",")];
+    for (const r of this.records) {
+      csvLines.push(headers.map((h) => r[h]).join(","));
+    }
+    const csvString = csvLines.join("\n");
+    this.lastCsvContent = csvString;
+
+    const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+    const handStr = this.targetHand.toLowerCase();
+    this.lastFileName = `drarm_${handStr}_${this.sessionType}_${nowStr}.csv`;
+
+    // 自動ダウンロード発火
+    this.downloadLastCsv();
+  }
+
+  downloadLastCsv() {
+    if (!this.lastCsvContent || !this.lastFileName) return;
+    const blob = new Blob([this.lastCsvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = this.lastFileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    updateHitBadge("CSV SAVED", 1.2);
+  }
+}
+
+const datasetRecorder = new DatasetRecorder();
 
 // ==========================================================================
 // 5. 最下点ピーク反転検知（Extrema Detection）による確実な机面タップ検出
@@ -895,6 +1137,11 @@ function processVideoFrame(frameTime) {
         // 最下点ピーク反転検知（振り下ろしから机面に衝突して止まった瞬間を100%検出）
         const detectResult = state.updateAndDetect(primaryTipX, primaryTipY, timestampMs, cw, ch);
 
+        // 学習用データセット録画（全指先＋手首＋幾何学的変位の記録）
+        if (datasetRecorder.isRecording) {
+          datasetRecorder.recordFrame(handedness, landmarks, detectResult, timestampMs, cw, ch);
+        }
+
         // 指先マーカーおよび全指骨格ラインの描画
         if (showTrackingLines) {
           drawFingertipTrackingLines(landmarks, cw, ch, tips, detectResult.x, detectResult.y, state.tapState);
@@ -1074,6 +1321,91 @@ fullscreenBtn.addEventListener("click", () => {
     document.exitFullscreen().catch(() => {});
   }
 });
+
+// ==========================================================================
+// 10. 学習用データセット録画UIのイベントリスナー
+// ==========================================================================
+
+// 録画パネルの表示 / 非表示トグル
+if (toggleRecorderBtn && recorderPanel) {
+  toggleRecorderBtn.addEventListener("click", () => {
+    const isHidden = recorderPanel.classList.toggle("hidden");
+    toggleRecorderBtn.classList.toggle("active", !isHidden);
+  });
+}
+
+// 録画開始 / 停止ボタン
+if (recActionBtn) {
+  recActionBtn.addEventListener("click", () => {
+    datasetRecorder.toggle();
+  });
+}
+
+// CSVダウンロードボタン
+if (recDownloadBtn) {
+  recDownloadBtn.addEventListener("click", () => {
+    datasetRecorder.downloadLastCsv();
+  });
+}
+
+// セグメントボタン（セッション種別 & 対象手切り替え）
+recSegBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const sessionType = btn.dataset.type;
+    const targetHand = btn.dataset.hand;
+
+    if (sessionType) {
+      document.querySelectorAll(".rec-seg-btn[data-type]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      datasetRecorder.sessionType = sessionType;
+      updateHitBadge(`MODE: ${sessionType.toUpperCase()}`, 1.0);
+    } else if (targetHand) {
+      document.querySelectorAll(".rec-seg-btn[data-hand]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      datasetRecorder.targetHand = targetHand;
+      updateHitBadge(`HAND: ${targetHand.toUpperCase()}`, 1.0);
+    }
+  });
+});
+
+// キーボードショートカット操作
+window.addEventListener("keydown", (e) => {
+  // 入力フィールドにフォーカスがある場合は無視
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+
+  if (e.code === "KeyR" && !e.repeat) {
+    e.preventDefault();
+    datasetRecorder.toggle();
+  } else if (e.code === "Space") {
+    e.preventDefault();
+    datasetRecorder.isSpacePressed = true;
+    if (datasetRecorder.isRecording) {
+      datasetRecorder.hitCount++;
+      datasetRecorder.flashHitUi();
+    }
+  } else if (e.code === "Digit1") {
+    const btn = document.querySelector('.rec-seg-btn[data-type="tap"]');
+    if (btn) btn.click();
+  } else if (e.code === "Digit2") {
+    const btn = document.querySelector('.rec-seg-btn[data-type="neg_air"]');
+    if (btn) btn.click();
+  } else if (e.code === "Digit3") {
+    const btn = document.querySelector('.rec-seg-btn[data-type="neg_idle"]');
+    if (btn) btn.click();
+  } else if (e.code === "Digit4") {
+    const btn = document.querySelector('.rec-seg-btn[data-type="neg_wrist"]');
+    if (btn) btn.click();
+  }
+});
+
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") {
+    datasetRecorder.isSpacePressed = false;
+  }
+});
+
+// デバッグ用
+window.datasetRecorder = datasetRecorder;
 
 // アプリケーション起動
 async function main() {

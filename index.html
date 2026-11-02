@@ -69,6 +69,14 @@
           </svg>
         </button>
 
+        <!-- 録画モード切替（データ収集・学習アノテーション） -->
+        <button id="toggle-recorder-btn" class="nav-icon-btn" aria-label="Toggle Dataset Recorder">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+            <circle cx="12" cy="12" r="4" fill="currentColor" />
+          </svg>
+        </button>
+
         <!-- フルスクリーン切替 -->
         <button id="fullscreen-btn" class="nav-icon-btn" aria-label="Toggle Fullscreen">
           <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
@@ -76,6 +84,45 @@
           </svg>
         </button>
       </nav>
+
+      <!-- 学習用データセット録画パネル（完全ボーダーレス・面のトーン差・ミニマル英語UI） -->
+      <aside id="recorder-panel" class="recorder-panel hidden" aria-label="Dataset Recorder">
+        <div class="recorder-bar">
+          <!-- セッション種別セレクター -->
+          <div class="rec-segment-group" role="radiogroup" aria-label="Session Type">
+            <button class="rec-seg-btn active" data-type="tap" title="Tap (Positive Hits)">TAP</button>
+            <button class="rec-seg-btn" data-type="neg_air" title="Air Motion (Negative)">AIR</button>
+            <button class="rec-seg-btn" data-type="neg_idle" title="Desk Idle (Negative)">IDLE</button>
+            <button class="rec-seg-btn" data-type="neg_wrist" title="Wrist Only (Negative)">WRIST</button>
+          </div>
+
+          <!-- 対象の手セレクター -->
+          <div class="rec-segment-group hand-group" role="radiogroup" aria-label="Target Hand">
+            <button class="rec-seg-btn active" data-hand="Right">R</button>
+            <button class="rec-seg-btn" data-hand="Left">L</button>
+            <button class="rec-seg-btn" data-hand="Both">ALL</button>
+          </div>
+
+          <!-- 録画開始/停止ボタン -->
+          <button id="rec-action-btn" class="rec-action-btn" aria-label="Start Recording" title="Start / Stop Recording (Shortcut: R)">
+            <span class="rec-dot"></span>
+          </button>
+
+          <!-- 録画メトリクス表示 -->
+          <div class="rec-stats">
+            <span id="rec-time" class="rec-stat-item">00.0s</span>
+            <span id="rec-frames" class="rec-stat-item">0f</span>
+            <span id="rec-hits" class="rec-stat-item">0 hits</span>
+          </div>
+
+          <!-- CSVダウンロードボタン -->
+          <button id="rec-download-btn" class="rec-icon-btn disabled" aria-label="Download Last CSV" title="Download Recorded CSV">
+            <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            </svg>
+          </button>
+        </div>
+      </aside>
 
       <!-- ミニマルなリアルタイム状態表示（画面左下・完全ボーダーレス・数値とヒット検知のみ） -->
       <aside id="status-hud" class="status-hud" aria-live="polite">

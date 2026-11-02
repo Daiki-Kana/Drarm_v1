@@ -365,3 +365,164 @@ html, body {
   color: var(--text-primary);
   font-weight: 600;
 }
+
+/* --------------------------------------------------------------------------
+   学習用データセット録画パネル（完全ボーダーレス・面のトーン差）
+   -------------------------------------------------------------------------- */
+.recorder-panel {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.recorder-panel.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -10px);
+}
+
+.recorder-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background-color: rgba(18, 18, 18, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* セグメントボタングループ（枠線なし、面のトーン差のみ） */
+.rec-segment-group {
+  display: flex;
+  background-color: rgba(255, 255, 255, 0.06);
+  border-radius: 9999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.rec-seg-btn {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.rec-seg-btn:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.rec-seg-btn.active {
+  background-color: #ffffff;
+  color: #000000;
+}
+
+/* 録画アクションボタン（REC / STOP） */
+.rec-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.rec-action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.rec-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: #ff3b30;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 録画中状態 */
+.rec-action-btn.recording {
+  background-color: rgba(255, 59, 48, 0.2);
+}
+
+.rec-action-btn.recording .rec-dot {
+  border-radius: 3px;
+  transform: scale(0.9);
+  animation: pulse-rec 1.2s infinite ease-in-out;
+}
+
+@keyframes pulse-rec {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.75);
+  }
+}
+
+/* 録画メトリクス */
+.rec-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 0 4px;
+}
+
+.rec-stat-item {
+  min-width: 42px;
+  text-align: center;
+}
+
+#rec-hits.active-hit {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+/* アイコンボタン（ダウンロード） */
+.rec-icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.rec-icon-btn:hover:not(.disabled) {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.rec-icon-btn.disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.rec-icon-btn .btn-svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
