@@ -44,6 +44,25 @@ const recHits = document.getElementById("rec-hits");
 const recDownloadBtn = document.getElementById("rec-download-btn");
 const recSegBtns = document.querySelectorAll(".rec-seg-btn");
 
+// コマ送り手動ラベリングモーダル関連DOM要素
+const labelerModal = document.getElementById("labeler-modal");
+const labelerCanvas = document.getElementById("labeler-canvas");
+const labelerHitIndicator = document.getElementById("labeler-hit-indicator");
+const timelineMarkerBar = document.getElementById("timeline-marker-bar");
+const labelerSeekbar = document.getElementById("labeler-seekbar");
+const btnStepPrev5 = document.getElementById("btn-step-prev5");
+const btnStepPrev1 = document.getElementById("btn-step-prev1");
+const btnStepPlay = document.getElementById("btn-step-play");
+const btnStepNext1 = document.getElementById("btn-step-next1");
+const btnStepNext5 = document.getElementById("btn-step-next5");
+const btnToggleHit = document.getElementById("btn-toggle-hit");
+const toggleHitLabel = document.getElementById("toggle-hit-label");
+const labelerFrameBadge = document.getElementById("labeler-frame-badge");
+const labelerTimeBadge = document.getElementById("labeler-time-badge");
+const labelerHitsBadge = document.getElementById("labeler-hits-badge");
+const btnLabelerDiscard = document.getElementById("btn-labeler-discard");
+const btnLabelerExport = document.getElementById("btn-labeler-export");
+
 // ==========================================================================
 // 2. プロシージャル Web Audio ドラム音響エンジン（外部ファイル依存ゼロ）
 // ==========================================================================
@@ -471,7 +490,7 @@ async function loadPiarnoDataset() {
 }
 
 // ==========================================================================
-// 4.5 学習用データセットレコーダー（全指先＋手首の時系列CSV記録・アノテーション）
+// 4.5 学習用データセットレコーダー（全指先＋手首の時系列CSV記録・スナップショット保持）
 // ==========================================================================
 class DatasetRecorder {
   constructor() {
@@ -482,8 +501,6 @@ class DatasetRecorder {
     this.startTime = 0;
     this.frameCount = 0;
     this.hitCount = 0;
-    this.lastCsvContent = null;
-    this.lastFileName = null;
     this.isSpacePressed = false;
 
     // 前フレームの手首・指先Y座標（速度計算用）
@@ -507,7 +524,14 @@ class DatasetRecorder {
     if (!this.isRecording) return;
     this.isRecording = false;
     this.updateUI();
-    this.exportCsv();
+    updateHitBadge("REC STOP", 1.0);
+
+    // 録画停止後、直ちにスマホ対応コマ送り手動ラベリングモーダルを起動
+    if (this.records.length > 0) {
+      setTimeout(() => {
+        frameStepLabeler.open(this.records, this.sessionType, this.targetHand);
+      }, 100);
+    }
   }
 
   toggle() {
@@ -519,7 +543,7 @@ class DatasetRecorder {
   }
 
   /**
-   * 毎フレームの全指先・手首・動的特徴量の記録
+   * 毎フレームの全指先・手首・動的特徴量・スナップショット画像の記録
    */
   recordFrame(handedness, landmarks, detectResult, timestampMs, cw, ch) {
     if (!this.isRecording) return;
@@ -570,7 +594,7 @@ class DatasetRecorder {
     // 指先と手首の相対高低差（机衝突時に指先が止まり手首が下がるのを捉える最重要パラメータ）
     const relTipWristY = (leadTipY - wristY) / (ch * handScaleL);
 
-    // 打鍵ラベルの判定
+    // 初期ラベルの自動推定（TAPセッション時の初期候補、後からコマ送りで1タップで変更可能）
     let isHit = 0;
     if (this.sessionType === "tap") {
       if (this.isSpacePressed || detectResult.isHit) {
@@ -584,8 +608,8 @@ class DatasetRecorder {
 
     this.frameCount++;
 
-    // 1行のレコードを蓄積
-    this.records.push({
+    // 1行のレコードを作成
+    const record = {
       timestamp: Math.round(timestampMs),
       hand: handedness,
       session_type: this.sessionType,
@@ -634,9 +658,23 @@ class DatasetRecorder {
       hand_scale_l: handScaleL.toFixed(5),
       rel_tip_wrist_y: relTipWristY.toFixed(4),
       // 正解ラベル
-      is_hit: isHit
-    });
+      is_hit: isHit,
+      // レビューUI用内部キャッシュ（CSV出力時は除外）
+      rawLandmarks: landmarks,
+      imageBitmap: null
+    };
 
+    // レビュープレビュー用縮小スナップショットの非同期キャプチャ（メイン推論をブロックしない）
+    if (window.createImageBitmap && video.videoWidth > 0 && video.videoHeight > 0) {
+      window
+        .createImageBitmap(video, { resizeWidth: 640, resizeHeight: 360, resizeQuality: "low" })
+        .then((bmp) => {
+          record.imageBitmap = bmp;
+        })
+        .catch(() => {});
+    }
+
+    this.records.push(record);
     this.updateMetrics();
   }
 
@@ -665,42 +703,286 @@ class DatasetRecorder {
       recDownloadBtn.classList.toggle("disabled", this.records.length === 0);
     }
   }
+}
 
+const datasetRecorder = new DatasetRecorder();
+
+// ==========================================================================
+// 4.6 スマホ対応・コマ送り手動ラベラー（FrameStepLabeler）
+// ==========================================================================
+class FrameStepLabeler {
+  constructor() {
+    this.isOpen = false;
+    this.records = [];
+    this.currentIndex = 0;
+    this.isPlaying = false;
+    this.playInterval = null;
+    this.sessionType = "tap";
+    this.targetHand = "Right";
+    this.canvas = labelerCanvas;
+    this.ctx = this.canvas ? this.canvas.getContext("2d") : null;
+  }
+
+  /**
+   * レビューモーダルを開き、録画データのコマ送り編集を開始
+   */
+  open(records, sessionType, targetHand) {
+    if (!records || records.length === 0) return;
+    this.records = records;
+    this.sessionType = sessionType;
+    this.targetHand = targetHand;
+    this.currentIndex = 0;
+    this.isPlaying = false;
+    clearInterval(this.playInterval);
+
+    if (labelerModal) labelerModal.classList.remove("hidden");
+    this.isOpen = true;
+
+    if (labelerSeekbar) {
+      labelerSeekbar.min = 0;
+      labelerSeekbar.max = records.length - 1;
+      labelerSeekbar.value = 0;
+    }
+
+    this.renderTimelineMarkers();
+    this.renderCurrentFrame();
+  }
+
+  close() {
+    this.isOpen = false;
+    this.isPlaying = false;
+    clearInterval(this.playInterval);
+    if (labelerModal) labelerModal.classList.add("hidden");
+
+    // メモリ上のImageBitmapリソースを安全に解放
+    this.records.forEach((r) => {
+      if (r.imageBitmap) {
+        try {
+          r.imageBitmap.close();
+        } catch (e) {}
+        r.imageBitmap = null;
+      }
+    });
+  }
+
+  /**
+   * タイムライン上の打鍵マーカードット再描画
+   */
+  renderTimelineMarkers() {
+    if (!timelineMarkerBar) return;
+    timelineMarkerBar.innerHTML = "";
+    const total = this.records.length;
+    if (total <= 1) return;
+
+    this.records.forEach((r, idx) => {
+      if (r.is_hit === 1) {
+        const dot = document.createElement("div");
+        dot.className = "marker-dot";
+        dot.style.left = `${(idx / (total - 1)) * 100}%`;
+        timelineMarkerBar.appendChild(dot);
+      }
+    });
+
+    const hitTotal = this.records.filter((r) => r.is_hit === 1).length;
+    if (labelerHitsBadge) {
+      labelerHitsBadge.textContent = `${hitTotal} HITS`;
+    }
+  }
+
+  /**
+   * 現在選択中フレームの描画（背景画像＋骨格＋マーカー）
+   */
+  renderCurrentFrame() {
+    if (!this.isOpen || this.records.length === 0 || !this.ctx) return;
+    const r = this.records[this.currentIndex];
+    if (!r) return;
+
+    if (this.canvas.width !== 640 || this.canvas.height !== 360) {
+      this.canvas.width = 640;
+      this.canvas.height = 360;
+    }
+
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    this.ctx.clearRect(0, 0, cw, ch);
+
+    // 1. スナップショット画像を描画
+    if (r.imageBitmap) {
+      this.ctx.drawImage(r.imageBitmap, 0, 0, cw, ch);
+    } else {
+      this.ctx.fillStyle = "#0c0c0c";
+      this.ctx.fillRect(0, 0, cw, ch);
+    }
+
+    // 2. 骨格ライン & 指先ノードの描画
+    if (r.rawLandmarks) {
+      this.drawRecordedSkeleton(r.rawLandmarks, cw, ch, r.is_hit === 1);
+    }
+
+    // 3. UIの同期
+    if (labelerSeekbar) labelerSeekbar.value = this.currentIndex;
+
+    if (labelerFrameBadge) {
+      labelerFrameBadge.textContent = `F: ${this.currentIndex + 1} / ${this.records.length}`;
+    }
+
+    if (labelerTimeBadge) {
+      const sec = (r.timestamp / 1000).toFixed(1);
+      labelerTimeBadge.textContent = `${sec}s`;
+    }
+
+    const isHit = r.is_hit === 1;
+    if (labelerHitIndicator) {
+      labelerHitIndicator.classList.toggle("hidden", !isHit);
+    }
+
+    if (btnToggleHit) {
+      btnToggleHit.classList.toggle("marked", isHit);
+      if (toggleHitLabel) {
+        toggleHitLabel.textContent = isHit ? "UNMARK HIT" : "MARK HIT";
+      }
+    }
+  }
+
+  /**
+   * 記録フレームの骨格・指先の描画
+   */
+  drawRecordedSkeleton(landmarks, cw, ch, isHit) {
+    this.ctx.save();
+    this.ctx.lineCap = "round";
+    this.ctx.lineJoin = "round";
+
+    // 骨格ライン
+    const fingerChains = [
+      [0, 1, 2, 3, 4],
+      [0, 5, 6, 7, 8],
+      [0, 9, 10, 11, 12],
+      [0, 13, 14, 15, 16],
+      [0, 17, 18, 19, 20]
+    ];
+
+    this.ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
+    this.ctx.lineWidth = 2.0;
+
+    fingerChains.forEach((chain) => {
+      this.ctx.beginPath();
+      chain.forEach((idx, i) => {
+        const x = landmarks[idx].x * cw;
+        const y = landmarks[idx].y * ch;
+        if (i === 0) this.ctx.moveTo(x, y);
+        else this.ctx.lineTo(x, y);
+      });
+      this.ctx.stroke();
+    });
+
+    // 関節ノード
+    landmarks.forEach((pt, idx) => {
+      const x = pt.x * cw;
+      const y = pt.y * ch;
+      const isTip = [4, 8, 12, 16, 20].includes(idx);
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, isTip ? 4.5 : 2.5, 0, Math.PI * 2);
+      this.ctx.fillStyle = isTip ? "#ffffff" : "rgba(255, 255, 255, 0.6)";
+      this.ctx.fill();
+    });
+
+    // 打鍵主軸指先（8と12の重心）のハイライト
+    const p8 = landmarks[8];
+    const p12 = landmarks[12];
+    const leadX = (p8.x + p12.x) * 0.5 * cw;
+    const leadY = (p8.y + p12.y) * 0.5 * ch;
+
+    this.ctx.beginPath();
+    this.ctx.arc(leadX, leadY, isHit ? 16 : 8, 0, Math.PI * 2);
+    this.ctx.fillStyle = isHit ? "#ffffff" : "rgba(255, 255, 255, 0.85)";
+    if (isHit) {
+      this.ctx.shadowColor = "#ffffff";
+      this.ctx.shadowBlur = 25;
+    }
+    this.ctx.fill();
+
+    this.ctx.restore();
+  }
+
+  seekTo(idx) {
+    this.currentIndex = Math.max(0, Math.min(idx, this.records.length - 1));
+    this.renderCurrentFrame();
+  }
+
+  step(delta) {
+    this.seekTo(this.currentIndex + delta);
+  }
+
+  togglePlay() {
+    this.isPlaying = !this.isPlaying;
+    const iconPath = document.querySelector("#play-icon-svg path");
+    if (this.isPlaying) {
+      if (iconPath) iconPath.setAttribute("d", "M6 19h4V5H6v14zm8-14v14h4V5h-4z");
+      this.playInterval = setInterval(() => {
+        if (this.currentIndex >= this.records.length - 1) {
+          this.togglePlay();
+          return;
+        }
+        this.step(1);
+      }, 33);
+    } else {
+      if (iconPath) iconPath.setAttribute("d", "M8 5v14l11-7z");
+      clearInterval(this.playInterval);
+    }
+  }
+
+  toggleMarker() {
+    if (this.records.length === 0) return;
+    const cur = this.records[this.currentIndex];
+    cur.is_hit = cur.is_hit === 1 ? 0 : 1;
+
+    // マーカー設置時にドラム音を試聴再生（打鍵位置が直感的に確認できる）
+    if (cur.is_hit === 1 && drumEngine) {
+      drumEngine.ensureRunning();
+      drumEngine.playSnare(0.9);
+    }
+
+    this.renderTimelineMarkers();
+    this.renderCurrentFrame();
+  }
+
+  /**
+   * アノテーション済み完成版CSVのエクスポートとダウンロード
+   */
   exportCsv() {
     if (this.records.length === 0) return;
 
-    const headers = Object.keys(this.records[0]);
+    // 出力用ヘッダー（内部キャッシュ用キーは除外）
+    const sample = this.records[0];
+    const excludedKeys = new Set(["imageBitmap", "rawLandmarks"]);
+    const headers = Object.keys(sample).filter((k) => !excludedKeys.has(k));
+
     const csvLines = [headers.join(",")];
     for (const r of this.records) {
       csvLines.push(headers.map((h) => r[h]).join(","));
     }
     const csvString = csvLines.join("\n");
-    this.lastCsvContent = csvString;
 
     const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
     const handStr = this.targetHand.toLowerCase();
-    this.lastFileName = `drarm_${handStr}_${this.sessionType}_${nowStr}.csv`;
+    const fileName = `drarm_${handStr}_${this.sessionType}_annotated_${nowStr}.csv`;
 
-    // 自動ダウンロード発火
-    this.downloadLastCsv();
-  }
-
-  downloadLastCsv() {
-    if (!this.lastCsvContent || !this.lastFileName) return;
-    const blob = new Blob([this.lastCsvContent], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = this.lastFileName;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    updateHitBadge("CSV SAVED", 1.2);
+
+    updateHitBadge("CSV EXPORTED", 1.2);
+    this.close();
   }
 }
 
-const datasetRecorder = new DatasetRecorder();
+const frameStepLabeler = new FrameStepLabeler();
 
 // ==========================================================================
 // 5. 最下点ピーク反転検知（Extrema Detection）による確実な机面タップ検出
@@ -1368,11 +1650,73 @@ recSegBtns.forEach((btn) => {
   });
 });
 
+// ==========================================================================
+// 11. スマホ対応コマ送り手動ラベラーのイベントリスナー
+// ==========================================================================
+
+// シークバースライダー
+if (labelerSeekbar) {
+  labelerSeekbar.addEventListener("input", (e) => {
+    const val = parseInt(e.target.value, 10);
+    frameStepLabeler.seekTo(val);
+  });
+}
+
+// コマ送りナビゲーション
+if (btnStepPrev5) btnStepPrev5.addEventListener("click", () => frameStepLabeler.step(-5));
+if (btnStepPrev1) btnStepPrev1.addEventListener("click", () => frameStepLabeler.step(-1));
+if (btnStepPlay) btnStepPlay.addEventListener("click", () => frameStepLabeler.togglePlay());
+if (btnStepNext1) btnStepNext1.addEventListener("click", () => frameStepLabeler.step(1));
+if (btnStepNext5) btnStepNext5.addEventListener("click", () => frameStepLabeler.step(5));
+
+// 打鍵マーカートグルボタン
+if (btnToggleHit) {
+  btnToggleHit.addEventListener("click", () => {
+    frameStepLabeler.toggleMarker();
+  });
+}
+
+// 破棄 / 閉じる
+if (btnLabelerDiscard) {
+  btnLabelerDiscard.addEventListener("click", () => {
+    frameStepLabeler.close();
+  });
+}
+
+// アノテーション済みCSVエクスポート
+if (btnLabelerExport) {
+  btnLabelerExport.addEventListener("click", () => {
+    frameStepLabeler.exportCsv();
+  });
+}
+
 // キーボードショートカット操作
 window.addEventListener("keydown", (e) => {
   // 入力フィールドにフォーカスがある場合は無視
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
 
+  // レビューモーダル表示中のショートカット
+  if (frameStepLabeler.isOpen) {
+    if (e.code === "ArrowLeft") {
+      e.preventDefault();
+      frameStepLabeler.step(e.shiftKey ? -5 : -1);
+    } else if (e.code === "ArrowRight") {
+      e.preventDefault();
+      frameStepLabeler.step(e.shiftKey ? 5 : 1);
+    } else if (e.code === "Space" || e.code === "KeyM") {
+      e.preventDefault();
+      frameStepLabeler.toggleMarker();
+    } else if (e.code === "KeyP") {
+      e.preventDefault();
+      frameStepLabeler.togglePlay();
+    } else if (e.code === "Escape") {
+      e.preventDefault();
+      frameStepLabeler.close();
+    }
+    return;
+  }
+
+  // 通常時のショートカット
   if (e.code === "KeyR" && !e.repeat) {
     e.preventDefault();
     datasetRecorder.toggle();
@@ -1404,8 +1748,9 @@ window.addEventListener("keyup", (e) => {
   }
 });
 
-// デバッグ用
+// デバッグ用グローバル参照
 window.datasetRecorder = datasetRecorder;
+window.frameStepLabeler = frameStepLabeler;
 
 // アプリケーション起動
 async function main() {
