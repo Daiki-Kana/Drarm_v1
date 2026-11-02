@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Drarm</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='10' fill='%23ffffff'/></svg>" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 左右ドラムゾーン背景インジケーター（完全ボーダーレス・面の微細なトーン差のみ） -->
+      <div class="drum-zones-overlay" aria-hidden="true">
+        <div id="zone-cymbal" class="drum-zone left-zone">
+          <span class="zone-label">CYMBAL</span>
+        </div>
+        <div id="zone-drum" class="drum-zone right-zone">
+          <span class="zone-label">DRUM</span>
+        </div>
+      </div>
+
+      <!-- メイン映像コンテナ（ビデオとCanvasを自然比率で完全重畳） -->
+      <div class="video-container">
+        <video id="webcam" playsinline autoplay muted></video>
+        <canvas id="output-canvas"></canvas>
+      </div>
+
+      <!-- 打鍵波紋・ヒットエフェクト用オーバーレイCanvas -->
+      <canvas id="effect-canvas" class="effect-canvas"></canvas>
+
+      <!-- 初回オーディオ有効化オーバーレイ（完全ボーダーレス・ミニマル黒白・タップで即時発音） -->
+      <div id="audio-start-overlay" class="audio-start-overlay">
+        <button id="audio-start-btn" class="audio-start-card" aria-label="Tap to enable audio">
+          <svg viewBox="0 0 24 24" class="audio-overlay-icon" aria-hidden="true">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+          <span class="audio-overlay-text">TAP TO START AUDIO</span>
+        </button>
+      </div>
+
+      <!-- 右上コントロールアイコン群（完全ボーダーレス・SVGアイコンのみ） -->
+      <nav class="top-nav" aria-label="Controls">
+        <!-- 音声テストボタン（タップでドラム音を即時試聴） -->
+        <button id="test-audio-btn" class="nav-icon-btn" aria-label="Test Sound">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <path d="M12 3v9.28a4.39 4.39 0 0 0-1.5-.28 4.5 4.5 0 1 0 4.5 4.5V7h4V3h-7z"/>
+          </svg>
+        </button>
+
+        <!-- トラッキングライン表示切替（手首・掌心・骨格） -->
+        <button id="toggle-tracking-btn" class="nav-icon-btn active" aria-label="Toggle Tracking Lines">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <circle cx="12" cy="18" r="2.5" />
+            <circle cx="6" cy="11" r="2" />
+            <circle cx="10" cy="8" r="2" />
+            <circle cx="14" cy="8" r="2" />
+            <circle cx="18" cy="11" r="2" />
+            <path d="M12 18 L6 11 M12 18 L10 8 M12 18 L14 8 M12 18 L18 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+        </button>
+
+        <!-- カメラ再起動 / 再試行 -->
+        <button id="refresh-camera-btn" class="nav-icon-btn" aria-label="Restart Camera">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+          </svg>
+        </button>
+
+        <!-- フルスクリーン切替 -->
+        <button id="fullscreen-btn" class="nav-icon-btn" aria-label="Toggle Fullscreen">
+          <svg viewBox="0 0 24 24" class="btn-svg" aria-hidden="true">
+            <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+          </svg>
+        </button>
+      </nav>
+
+      <!-- ミニマルなリアルタイム状態表示（画面左下・完全ボーダーレス・数値とヒット検知のみ） -->
+      <aside id="status-hud" class="status-hud" aria-live="polite">
+        <span id="hud-audio" class="hud-item" title="Audio Status">MUTED</span>
+        <span id="hud-hit" class="hud-item hit-badge" title="Last Detected Hit">-</span>
+        <span id="hud-acc" class="hud-item" title="Vertical Acceleration">-</span>
+        <span id="hud-vel" class="hud-item" title="Vertical Velocity">-</span>
+      </aside>
+
+      <!-- カメラエラー・ロード中通知（完全ボーダーレス・ミニマルモーダル） -->
+      <div id="notice-modal" class="notice-modal hidden">
+        <div class="notice-card">
+          <svg viewBox="0 0 24 24" class="notice-icon" aria-hidden="true">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          <span id="notice-text" class="notice-text">INITIALIZING</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- アプリケーション本体 -->
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

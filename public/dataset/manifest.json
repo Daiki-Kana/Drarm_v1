@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "fingers": {
+    "thumb": [
+      "thumb/thumb_neg_air_01.csvindex_neg_air_02.csv",
+      "thumb/thumb_neg_idle_01.csv",
+      "thumb/thumb_neg_slide_01.csv",
+      "thumb/thumb_neg_wrist_01.csv",
+      "thumb/thumb_tap_01.csvindex_tap_02.csv"
+    ],
+    "middle": [
+      "middle/middle _neg_air_01.csvindex_neg_air_02.csv",
+      "middle/middle _neg_idle_01.csv",
+      "middle/middle _neg_slide_01.csv",
+      "middle/middle _neg_wrist_01.csv",
+      "middle/middle _tap_01.csvindex_tap_02.csv"
+    ],
+    "ring": [
+      "ring/ring_neg_air_01.csvindex_neg_air_02.csv",
+      "ring/ring_neg_idle_01.csv",
+      "ring/ring_neg_slide_01.csv",
+      "ring/ring_neg_wrist_01.csv",
+      "ring/ring _tap_01.csvindex_tap_02.csv"
+    ],
+    "pinky": [
+      "pinky/pinky_neg_air_01.csvindex_neg_air_02.csv",
+      "pinky/pinky_neg_idle_01.csv",
+      "pinky/pinky_neg_slide_01.csv",
+      "pinky/pinky_neg_wrist_01.csv",
+      "pinky/pinky_tap_01.csvindex_tap_02.csv"
+    ],
+    "index": [
+      "index/index_neg_air_01.csvindex_neg_air_02.csv",
+      "index/index_neg_idle_01.csv",
+      "index/index_neg_slide_01.csv",
+      "index/index_neg_wrist_01.csv",
+      "index/index_tap01.csvindex_tap_02.csv"
+    ]
+  }
+}

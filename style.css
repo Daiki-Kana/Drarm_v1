@@ -1,0 +1,367 @@
+/* ==========================================================================
+   Drarm - Minimalist Borderless & Icon-First Stylesheet
+   UI Design Rules: Complete borderless, icon-first, black & white, no emojis
+   ========================================================================== */
+
+:root {
+  --bg-deep: #050505;
+  --bg-surface: #121212;
+  --bg-elevated: #1a1a1a;
+  --bg-active: #2a2a2a;
+  
+  --text-primary: #f5f5f5;
+  --text-secondary: #888888;
+  --text-muted: #444444;
+
+  --flash-cymbal: rgba(255, 255, 255, 0.22);
+  --flash-drum: rgba(255, 255, 255, 0.28);
+
+  --font-mono: "SF Mono", Monaco, "Cascadia Code", Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: none; /* 完全な枠線撤廃 */
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-deep);
+}
+
+/* --------------------------------------------------------------------------
+   左右ドラムゾーン背景（完全ボーダーレス・面のトーン差）
+   -------------------------------------------------------------------------- */
+.drum-zones-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.drum-zone {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 24px;
+  transition: background-color 0.12s ease-out;
+}
+
+.left-zone {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.right-zone {
+  background-color: rgba(255, 255, 255, 0.035);
+}
+
+.left-zone.hit-flash {
+  background-color: var(--flash-cymbal);
+  transition: none;
+}
+
+.right-zone.hit-flash {
+  background-color: var(--flash-drum);
+  transition: none;
+}
+
+.zone-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* --------------------------------------------------------------------------
+   メイン映像コンテナ（ビデオとCanvasを自然比率で完全重畳・鏡像反転）
+   -------------------------------------------------------------------------- */
+.video-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  overflow: hidden;
+}
+
+#webcam {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* インカメラ鏡像反転 */
+  opacity: 0.72;
+  filter: contrast(1.1) grayscale(0.2);
+}
+
+#output-canvas {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* ビデオ座標と一致 */
+  pointer-events: none;
+}
+
+/* 打鍵波紋・パーティクルCanvas（ビデオ/Canvas座標と完全一致） */
+.effect-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* ビデオ座標と一致 */
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* --------------------------------------------------------------------------
+   右上ナビゲーション（完全ボーダーレス・アイコンファースト）
+   -------------------------------------------------------------------------- */
+.top-nav {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  gap: 10px;
+  z-index: 10;
+}
+
+.nav-icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 9999px;
+  background-color: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.nav-icon-btn:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+}
+
+.nav-icon-btn:active {
+  transform: scale(0.92);
+  background-color: rgba(255, 255, 255, 0.24);
+}
+
+.nav-icon-btn.active {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.btn-svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+/* --------------------------------------------------------------------------
+   初回オーディオ有効化オーバーレイ（完全ボーダーレス・面のトーン差・中央配置）
+   -------------------------------------------------------------------------- */
+.audio-start-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  z-index: 50;
+  transition: opacity 0.3s ease, visibility 0.3s;
+}
+
+.audio-start-overlay.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.audio-start-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 48px;
+  border-radius: 28px;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+  animation: pulse-card 2.5s infinite ease-in-out;
+}
+
+.audio-start-card:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.audio-start-card:active {
+  transform: scale(0.95);
+}
+
+.audio-overlay-icon {
+  width: 48px;
+  height: 48px;
+  fill: currentColor;
+}
+
+.audio-overlay-text {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--text-primary);
+}
+
+@keyframes pulse-card {
+  0%, 100% {
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+  50% {
+    background-color: rgba(255, 255, 255, 0.18);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   リアルタイムステータスHUD（左下・完全ボーダーレス・数値のみ）
+   -------------------------------------------------------------------------- */
+.status-hud {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.hud-item {
+  display: inline-block;
+  min-width: 44px;
+  text-align: center;
+  transition: color 0.12s ease, background-color 0.12s ease;
+}
+
+#hud-audio {
+  font-weight: 700;
+  color: #888888;
+}
+
+#hud-audio.ready {
+  color: #ffffff;
+}
+
+.hit-badge {
+  padding: 2px 10px;
+  border-radius: 9999px;
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  min-width: 90px;
+}
+
+.hit-badge.flash-active {
+  background-color: #ffffff;
+  color: #000000;
+  transform: scale(1.08);
+}
+
+/* --------------------------------------------------------------------------
+   通知・エラーモーダル（完全ボーダーレス）
+   -------------------------------------------------------------------------- */
+.notice-modal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 100;
+  transition: opacity 0.3s ease;
+}
+
+.notice-modal.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.notice-card {
+  padding: 24px 32px;
+  border-radius: 20px;
+  background-color: rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.notice-icon {
+  width: 32px;
+  height: 32px;
+  fill: var(--text-primary);
+  opacity: 0.8;
+}
+
+.notice-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: var(--text-primary);
+  font-weight: 600;
+}
