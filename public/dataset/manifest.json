@@ -1,5 +1,9 @@
 {
   "version": "1.0",
+  "drum_annotated": [
+    "drum_annotated/drum_hand1_60fps_87hits.csv",
+    "drum_annotated/drum_hand2_60fps_50hits.csv"
+  ],
   "fingers": {
     "thumb": [
       "thumb/thumb_neg_air_01.csvindex_neg_air_02.csv",
