@@ -1,9 +1,9 @@
 /**
- * Drarm_v1 - 手のひら打鍵・低遅延Webドラムシステム
+ * Drarm_v1 - 手のひら・指先打鍵 低遅延Webドラムシステム
  * 
- * 単眼カメラの映像から手のひらのトラッキングラインと加速度を算出し、
- * Piarnoの打鍵検知データに基づく閾値ヒステリシスと急減速スパイクによって机面インパクトを検出。
- * 画面左右（左: シンバル / 右: 通常ドラム）でゼロレイテンシなプロシージャル合成音を発音します。
+ * Piarno 1D方式の平滑化フィルタ（PointFilter）と十字ターゲット丸マーク（drawTipTargetMark）を完全移植。
+ * 各関節独立の 1 Euro Filter によるジッターフリー追従と、
+ * 相対沈み込み ry に基づく打鍵ヒステリシスで机面タッチを瞬時に検出します。
  */
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
@@ -44,25 +44,6 @@ const recHits = document.getElementById("rec-hits");
 const recDownloadBtn = document.getElementById("rec-download-btn");
 const recSegBtns = document.querySelectorAll(".rec-seg-btn");
 
-// コマ送り手動ラベリングモーダル関連DOM要素
-const labelerModal = document.getElementById("labeler-modal");
-const labelerCanvas = document.getElementById("labeler-canvas");
-const labelerHitIndicator = document.getElementById("labeler-hit-indicator");
-const timelineMarkerBar = document.getElementById("timeline-marker-bar");
-const labelerSeekbar = document.getElementById("labeler-seekbar");
-const btnStepPrev5 = document.getElementById("btn-step-prev5");
-const btnStepPrev1 = document.getElementById("btn-step-prev1");
-const btnStepPlay = document.getElementById("btn-step-play");
-const btnStepNext1 = document.getElementById("btn-step-next1");
-const btnStepNext5 = document.getElementById("btn-step-next5");
-const btnToggleHit = document.getElementById("btn-toggle-hit");
-const toggleHitLabel = document.getElementById("toggle-hit-label");
-const labelerFrameBadge = document.getElementById("labeler-frame-badge");
-const labelerTimeBadge = document.getElementById("labeler-time-badge");
-const labelerHitsBadge = document.getElementById("labeler-hits-badge");
-const btnLabelerDiscard = document.getElementById("btn-labeler-discard");
-const btnLabelerExport = document.getElementById("btn-labeler-export");
-
 // ==========================================================================
 // 2. プロシージャル Web Audio ドラム音響エンジン（外部ファイル依存ゼロ）
 // ==========================================================================
@@ -75,9 +56,6 @@ class ProceduralDrumEngine {
     this.isReady = false;
   }
 
-  /**
-   * オーディオHUDの表示同期
-   */
   updateHud() {
     if (!hudAudio) return;
     if (this.ctx && this.ctx.state === "running") {
@@ -89,9 +67,6 @@ class ProceduralDrumEngine {
     }
   }
 
-  /**
-   * オーディオコンテキストの初期化（ユーザー操作時に呼び出し）
-   */
   async init() {
     if (this.ctx && this.ctx.state !== "closed") {
       if (this.ctx.state === "suspended") {
@@ -109,7 +84,6 @@ class ProceduralDrumEngine {
       await this.ctx.resume();
     }
 
-    // ダイナミクスコンプレッサー（クリッピング歪み防止と音圧確保）
     this.limiter = this.ctx.createDynamicsCompressor();
     this.limiter.threshold.setValueAtTime(-3, this.ctx.currentTime);
     this.limiter.knee.setValueAtTime(4, this.ctx.currentTime);
@@ -123,7 +97,6 @@ class ProceduralDrumEngine {
     this.masterGain.connect(this.limiter);
     this.limiter.connect(this.ctx.destination);
 
-    // 1秒間のホワイトノイズバッファを生成（スネア・シンバル用）
     const bufferSize = this.ctx.sampleRate;
     this.noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
     const output = this.noiseBuffer.getChannelData(0);
@@ -133,12 +106,8 @@ class ProceduralDrumEngine {
 
     this.isReady = this.ctx.state === "running";
     this.updateHud();
-    console.log("[AUDIO] Procedural Drum Engine initialized. State:", this.ctx.state);
   }
 
-  /**
-   * 音声コンテキストの稼働保証（未初期化または休止時の復帰）
-   */
   async ensureRunning() {
     if (!this.ctx) {
       await this.init();
@@ -148,10 +117,6 @@ class ProceduralDrumEngine {
     }
   }
 
-  /**
-   * バスドラム（Kick）の合成
-   * 150Hzから38Hzへ急峻にピッチスイープするサイン波 ＋ アタッククリック
-   */
   playKick(intensity = 1.0) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -170,88 +135,73 @@ class ProceduralDrumEngine {
     gain.gain.setValueAtTime(volume, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
-    // クリック音（トランジェントのアタック感を補強）
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+
+    osc.start(now);
+    osc.stop(now + duration);
+
+    // クリックアタック
     const clickOsc = this.ctx.createOscillator();
     const clickGain = this.ctx.createGain();
     clickOsc.type = "triangle";
-    clickOsc.frequency.setValueAtTime(320, now);
-    clickOsc.frequency.exponentialRampToValueAtTime(40, now + 0.02);
-    clickGain.gain.setValueAtTime(0.5 * intensity, now);
-    clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.02);
-
+    clickOsc.frequency.setValueAtTime(400, now);
+    clickGain.gain.setValueAtTime(0.3 * intensity, now);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
     clickOsc.connect(clickGain);
     clickGain.connect(this.masterGain);
     clickOsc.start(now);
-    clickOsc.stop(now + 0.02);
-
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + duration);
+    clickOsc.stop(now + 0.015);
   }
 
-  /**
-   * スネアドラム（Snare）の合成
-   * バンドパスノイズ（スナッピー） ＋ 減衰サイン波（シェル胴鳴り）
-   */
   playSnare(intensity = 1.0) {
     if (!this.ctx || !this.noiseBuffer) return;
     const now = this.ctx.currentTime;
+    const volume = Math.min(1.0, 0.65 * intensity);
 
-    // 1. シェル（胴鳴りトーン）
+    // トーン成分
     const osc = this.ctx.createOscillator();
     const oscGain = this.ctx.createGain();
     osc.type = "triangle";
-    osc.frequency.setValueAtTime(180, now);
-    osc.frequency.exponentialRampToValueAtTime(80, now + 0.09);
-    oscGain.gain.setValueAtTime(0.6 * intensity, now);
+    osc.frequency.setValueAtTime(185, now);
+    osc.frequency.exponentialRampToValueAtTime(90, now + 0.1);
+    oscGain.gain.setValueAtTime(volume * 0.7, now);
     oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-
     osc.connect(oscGain);
     oscGain.connect(this.masterGain);
     osc.start(now);
     osc.stop(now + 0.12);
 
-    // 2. スナッピー（ホワイトノイズ ＋ ハイパス・バンドパスフィルター）
+    // スナッピーノイズ成分
     const noise = this.ctx.createBufferSource();
     noise.buffer = this.noiseBuffer;
-
     const filter = this.ctx.createBiquadFilter();
     filter.type = "highpass";
     filter.frequency.setValueAtTime(1000, now);
-
     const noiseGain = this.ctx.createGain();
-    const noiseDuration = 0.18;
-    noiseGain.gain.setValueAtTime(0.8 * intensity, now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + noiseDuration);
-
+    noiseGain.gain.setValueAtTime(volume * 0.85, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
     noise.connect(filter);
     filter.connect(noiseGain);
     noiseGain.connect(this.masterGain);
     noise.start(now);
-    noise.stop(now + noiseDuration);
+    noise.stop(now + 0.22);
   }
 
-  /**
-   * ハイハット（Hi-Hat）の合成
-   * 金属的倍音ノイズ ＋ 鋭いハイパスフィルター
-   */
   playHiHat(isOpen = false, intensity = 1.0) {
     if (!this.ctx || !this.noiseBuffer) return;
     const now = this.ctx.currentTime;
+    const duration = isOpen ? 0.35 : 0.06;
+    const volume = Math.min(0.8, 0.45 * intensity);
 
     const noise = this.ctx.createBufferSource();
     noise.buffer = this.noiseBuffer;
-
     const filter = this.ctx.createBiquadFilter();
     filter.type = "highpass";
-    filter.frequency.setValueAtTime(7500, now);
+    filter.frequency.setValueAtTime(7000, now);
 
     const gain = this.ctx.createGain();
-    const duration = isOpen ? 0.32 : 0.05;
-    const vol = (isOpen ? 0.55 : 0.7) * intensity;
-
-    gain.gain.setValueAtTime(vol, now);
+    gain.gain.setValueAtTime(volume, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     noise.connect(filter);
@@ -261,26 +211,21 @@ class ProceduralDrumEngine {
     noise.stop(now + duration);
   }
 
-  /**
-   * クラッシュシンバル（Crash）の合成
-   * 複数の高周波金属倍音 ＋ ホワイトノイズ ＋ 長時間の豊かな減衰
-   */
   playCrash(intensity = 1.0) {
     if (!this.ctx || !this.noiseBuffer) return;
     const now = this.ctx.currentTime;
+    const duration = 1.2;
+    const volume = Math.min(1.1, 0.7 * intensity);
 
-    // 金属光沢ノイズ
     const noise = this.ctx.createBufferSource();
     noise.buffer = this.noiseBuffer;
-
     const filter = this.ctx.createBiquadFilter();
     filter.type = "bandpass";
-    filter.frequency.setValueAtTime(5400, now);
-    filter.Q.setValueAtTime(1.8, now);
+    filter.frequency.setValueAtTime(4500, now);
+    filter.Q.setValueAtTime(1.2, now);
 
     const gain = this.ctx.createGain();
-    const duration = 1.4;
-    gain.gain.setValueAtTime(0.75 * intensity, now);
+    gain.gain.setValueAtTime(volume, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     noise.connect(filter);
@@ -290,22 +235,18 @@ class ProceduralDrumEngine {
     noise.stop(now + duration);
   }
 
-  /**
-   * タム（Tom）の合成
-   * ピッチスイープするウォームな三角波
-   */
   playTom(intensity = 1.0) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
+    const duration = 0.25;
 
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(160, now);
-    osc.frequency.exponentialRampToValueAtTime(75, now + 0.16);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(150, now);
+    osc.frequency.exponentialRampToValueAtTime(70, now + duration);
 
-    const duration = 0.22;
-    gain.gain.setValueAtTime(0.7 * intensity, now);
+    gain.gain.setValueAtTime(0.6 * intensity, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     osc.connect(gain);
@@ -318,10 +259,10 @@ class ProceduralDrumEngine {
 const drumEngine = new ProceduralDrumEngine();
 
 // ==========================================================================
-// 3. 1 Euro Filter による適応型平滑化（ノイズ除去とゼロレイテンシ追従）
+// 3. Piarno 1D方式 1 Euro Filter & PointFilter（超滑らか・ジッターゼロ追従）
 // ==========================================================================
 class OneEuroFilter {
-  constructor(minCutoff = 1.4, beta = 0.012, dCutoff = 1.0) {
+  constructor(minCutoff = 1.2, beta = 0.008, dCutoff = 1.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.dCutoff = dCutoff;
@@ -352,13 +293,11 @@ class OneEuroFilter {
     const dt = Math.max((timestamp - this.tPrev) / 1000, 0.001);
     this.tPrev = timestamp;
 
-    // 速度（1階差分）の平滑化
     const dx = (x - this.xPrev) / dt;
     const aD = this.alpha(this.dCutoff, dt);
     const dxHat = aD * dx + (1 - aD) * this.dxPrev;
     this.dxPrev = dxHat;
 
-    // 速度に応じた動的カットオフ周波数
     const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
     const a = this.alpha(cutoff, dt);
 
@@ -369,91 +308,75 @@ class OneEuroFilter {
 }
 
 /**
- * 指先代表点の2D座標・速度・加速度トラッカー（Fingertip Tracker）
+ * 2D関節座標用 1 Euro Filter（Piarno完全準拠）
  */
-class PalmTracker {
-  constructor() {
-    // 指先の俊敏な運動に最適化した適応フィルタ（低ジッター ＆ 高速移動スルー）
-    this.xf = new OneEuroFilter(1.5, 0.025);
-    this.yf = new OneEuroFilter(1.5, 0.025);
-
-    // 垂直速度と減速加速度のトラッキング
-    this.prevVy = 0;
-    this.prevTimestamp = null;
-    this.smoothAccY = 0;
-    this.accFilter = new OneEuroFilter(2.2, 0.03);
+class PointFilter {
+  constructor(minCutoff = 1.2, beta = 0.008) {
+    this.xf = new OneEuroFilter(minCutoff, beta);
+    this.yf = new OneEuroFilter(minCutoff, beta);
   }
 
   reset() {
     this.xf.reset();
     this.yf.reset();
-    this.accFilter.reset();
-    this.prevVy = 0;
-    this.smoothAccY = 0;
-    this.prevTimestamp = null;
   }
 
-  update(rawX, rawY, timestamp = performance.now()) {
-    const smoothX = this.xf.filter(rawX, timestamp);
-    const smoothY = this.yf.filter(rawY, timestamp);
-
-    const vy = this.yf.dxPrev; // Y軸速度（ピクセル/秒、下向き正）
-
-    let accY = 0;
-    if (this.prevTimestamp !== null) {
-      const dt = Math.max((timestamp - this.prevTimestamp) / 1000, 0.001);
-      // 離散加速度（速度の差分）
-      const rawAccY = (vy - this.prevVy) / dt;
-      // 加速度の適応平滑化
-      accY = this.accFilter.filter(rawAccY, timestamp);
-    }
-    this.prevVy = vy;
-    this.prevTimestamp = timestamp;
-    this.smoothAccY = accY;
-
+  filter(x, y, timestamp = performance.now()) {
     return {
-      x: smoothX,
-      y: smoothY,
-      vy: vy,
-      ay: accY
+      x: this.xf.filter(x, timestamp),
+      y: this.yf.filter(y, timestamp)
     };
   }
 }
 
-const palmTracker = new PalmTracker();
+// 骨格接続定義
+const HAND_CONNECTIONS = [
+  // 手のひら
+  [0, 1], [0, 5], [5, 9], [9, 13], [13, 17], [0, 17],
+  // 親指
+  [1, 2], [2, 3], [3, 4],
+  // 人差し指
+  [5, 6], [6, 7], [7, 8],
+  // 中指
+  [9, 10], [10, 11], [11, 12],
+  // 薬指
+  [13, 14], [14, 15], [15, 16],
+  // 小指
+  [17, 18], [18, 19], [19, 20]
+];
+
+const INDEX_LANDMARK_INDICES = [5, 6, 7, 8];
+const OTHER_CONNECTIONS = HAND_CONNECTIONS.filter(
+  ([s, e]) => !(INDEX_LANDMARK_INDICES.includes(s) && INDEX_LANDMARK_INDICES.includes(e))
+);
 
 // ==========================================================================
-// 4. Piarno 打鍵データセット解析 ＆ 動的キャリブレーション
+// 4. 打鍵閾値パラメータ & データセット読み込み
 // ==========================================================================
-let hitVelocityThreshold = 380;     // 振り下ろし速度閾値（px/s）
-let impactDecelThreshold = -2800;   // 机面接触時の制動減速加速度スパイク（px/s²）
-let baselineHitRy = 0.55;           // 相対沈み込み閾値
-let datasetLoaded = false;
+let hitRyThreshold = 0.58;   // 沈み込み打鍵閾値 ry
+let liftRyThreshold = 0.38;  // リフト復帰閾値 ry
+const MIN_COOLDOWN_MS = 60;  // チャタリング防止クールダウン
 
 /**
- * Piarnoの既存データセット（public/dataset または dataset）を読み込み、閾値を最適化
+ * Piarnoデータセットからの閾値最適化
  */
 async function loadPiarnoDataset() {
   try {
     let res = await fetch("./dataset/manifest.json");
-    if (!res.ok) {
-      res = await fetch("/dataset/manifest.json");
-    }
+    if (!res.ok) res = await fetch("/dataset/manifest.json");
     if (!res.ok) return;
 
     const manifest = await res.json();
     let files = [];
     if (Array.isArray(manifest)) files = manifest;
-    else if (manifest && manifest.files) files = manifest.files;
-    else if (manifest && manifest.fingers) files = Object.values(manifest.fingers).flat();
+    else if (manifest?.files) files = manifest.files;
+    else if (manifest?.fingers) files = Object.values(manifest.fingers).flat();
 
     const hitRys = [];
-    for (const f of files.slice(0, 8)) { // 代表ファイルをサンプリング
+    for (const f of files.slice(0, 8)) {
       try {
         let csvRes = await fetch(`./dataset/${f}`);
-        if (!csvRes.ok) {
-          csvRes = await fetch(`/dataset/${f}`);
-        }
+        if (!csvRes.ok) csvRes = await fetch(`/dataset/${f}`);
         if (!csvRes.ok) continue;
 
         const text = await csvRes.text();
@@ -472,17 +395,15 @@ async function loadPiarnoDataset() {
             hitRys.push(ryVal);
           }
         }
-      } catch (err) {
-        // 個別スキップ
-      }
+      } catch (e) {}
     }
 
     if (hitRys.length > 0) {
       hitRys.sort((a, b) => a - b);
       const median = hitRys[Math.floor(hitRys.length * 0.5)];
-      baselineHitRy = Math.max(0.40, median * 0.85);
-      datasetLoaded = true;
-      console.log(`[DATASET] Loaded ${hitRys.length} hit samples from Piarno. Baseline Ry: ${baselineHitRy.toFixed(2)}`);
+      hitRyThreshold = Math.max(0.45, Math.min(0.75, median * 0.88));
+      liftRyThreshold = hitRyThreshold * 0.62;
+      console.log(`[DATASET] Optimized thresholds: hitRy=${hitRyThreshold.toFixed(2)}, liftRy=${liftRyThreshold.toFixed(2)}`);
     }
   } catch (err) {
     console.warn("[DATASET] Using default biomechanical thresholds:", err);
@@ -490,22 +411,135 @@ async function loadPiarnoDataset() {
 }
 
 // ==========================================================================
-// 4.5 学習用データセットレコーダー（全指先＋手首の時系列CSV記録・スナップショット保持）
+// 5. 左右の手のトラッカーステート（Piarno準拠 独立PointFilter & ry打鍵検知）
+// ==========================================================================
+class HandTrackerState {
+  constructor(name) {
+    this.name = name; // "Left" または "Right"
+    this.tapState = "IDLE"; // "IDLE" または "TOUCHED"
+    this.lastHitTime = 0;
+
+    // Piarnoと同じく人差し指の各関節独立PointFilter（1.5, 0.01）
+    this.filters = {
+      wrist: new PointFilter(1.5, 0.01),
+      mcp: new PointFilter(1.5, 0.01),
+      pip: new PointFilter(1.5, 0.01),
+      dip: new PointFilter(1.5, 0.01),
+      tip: new PointFilter(1.5, 0.01)
+    };
+
+    this.prevTipY = null;
+    this.prevPrevTipY = null;
+  }
+
+  reset() {
+    this.tapState = "IDLE";
+    this.lastHitTime = 0;
+    this.prevTipY = null;
+    this.prevPrevTipY = null;
+    Object.values(this.filters).forEach((f) => f.reset());
+  }
+
+  /**
+   * 手のランドマークを処理し、Piarnoの平滑化座標と打鍵判定を計算
+   */
+  update(landmarks, timestampMs, cw, ch) {
+    const rawWrist = { x: landmarks[0].x * cw, y: landmarks[0].y * ch };
+    const rawMcp = { x: landmarks[5].x * cw, y: landmarks[5].y * ch };
+    const rawPip = { x: landmarks[6].x * cw, y: landmarks[6].y * ch };
+    const rawDip = { x: landmarks[7].x * cw, y: landmarks[7].y * ch };
+    const rawTip = { x: landmarks[8].x * cw, y: landmarks[8].y * ch };
+
+    // 各関節独立 1 Euro Filter 平滑化
+    const smoothWrist = this.filters.wrist.filter(rawWrist.x, rawWrist.y, timestampMs);
+    const smoothMcp = this.filters.mcp.filter(rawMcp.x, rawMcp.y, timestampMs);
+    const smoothPip = this.filters.pip.filter(rawPip.x, rawPip.y, timestampMs);
+    const smoothDip = this.filters.dip.filter(rawDip.x, rawDip.y, timestampMs);
+    const smoothTip = this.filters.tip.filter(rawTip.x, rawTip.y, timestampMs);
+
+    // 手の3D基準長 L（手首〜人差し指MCP間）
+    const dx05 = landmarks[5].x - landmarks[0].x;
+    const dy05 = landmarks[5].y - landmarks[0].y;
+    const dz05 = (landmarks[5].z ?? 0) - (landmarks[0].z ?? 0);
+    const L = Math.hypot(dx05, dy05, dz05) || 0.001;
+
+    // Piarnoの相対沈み込み変位 ry（TIPのY - MCPのY）/ (画面高さ * L)
+    const ry = (smoothTip.y - smoothMcp.y) / (ch * L);
+    const rawRy = (landmarks[8].y - landmarks[5].y) / L;
+
+    // 垂直移動速度（下降・最下点反転検知用）
+    let dy = 0;
+    let prevDy = 0;
+    if (this.prevTipY !== null) {
+      dy = smoothTip.y - this.prevTipY;
+      if (this.prevPrevTipY !== null) {
+        prevDy = this.prevTipY - this.prevPrevTipY;
+      }
+    }
+
+    const now = performance.now();
+    let isHit = false;
+
+    // 【Piarno 1D方式 + 机面衝突ピーク急停止による打鍵判定】
+    if (this.tapState === "IDLE") {
+      // 1. 相対沈み込み ry が閾値を超過
+      const isRyThresholdPassed = ry >= hitRyThreshold && rawRy >= hitRyThreshold * 0.90;
+      // 2. 振り下ろし動作（直前フレームで下向き移動）から机面に衝突して減速/停止した（dy <= 1.2px）
+      const isBottomReached = prevDy >= 0.8 && dy <= 1.2;
+
+      // ryが十分に深く入った場合、または沈み込み＋最下点停止が揃った瞬間に打鍵発音
+      if ((isRyThresholdPassed || (ry >= hitRyThreshold * 0.85 && isBottomReached)) &&
+          now - this.lastHitTime >= MIN_COOLDOWN_MS) {
+        this.tapState = "TOUCHED";
+        this.lastHitTime = now;
+        isHit = true;
+
+        // 打鍵強度ダイナミクス
+        const intensity = Math.min(1.4, Math.max(0.7, 0.75 + (ry - hitRyThreshold) * 0.8 + prevDy * 0.05));
+        triggerDrumHit(smoothTip.x, smoothTip.y, intensity * 3500, cw, ch);
+      }
+    } else if (this.tapState === "TOUCHED") {
+      // 指が持ち上がった（リフト）、または沈み込みが復帰閾値以下になった時
+      if (ry < liftRyThreshold || dy < -1.5) {
+        this.tapState = "IDLE";
+      }
+    }
+
+    this.prevPrevTipY = this.prevTipY;
+    this.prevTipY = smoothTip.y;
+
+    return {
+      smoothWrist,
+      smoothMcp,
+      smoothPip,
+      smoothDip,
+      smoothTip,
+      ry,
+      dy,
+      L,
+      isHit
+    };
+  }
+}
+
+const handTrackers = {
+  Left: new HandTrackerState("Left"),
+  Right: new HandTrackerState("Right")
+};
+
+// ==========================================================================
+// 6. 軽量学習用データセットレコーダー（CSVダイレクト記録・高速DL）
 // ==========================================================================
 class DatasetRecorder {
   constructor() {
     this.isRecording = false;
-    this.sessionType = "tap"; // "tap", "neg_air", "neg_idle", "neg_wrist"
-    this.targetHand = "Right"; // "Right", "Left", "Both"
+    this.sessionType = "tap";
+    this.targetHand = "Right";
     this.records = [];
     this.startTime = 0;
     this.frameCount = 0;
     this.hitCount = 0;
     this.isSpacePressed = false;
-
-    // 前フレームの手首・指先Y座標（速度計算用）
-    this.prevWristY = {};
-    this.prevTipY = {};
   }
 
   start() {
@@ -514,8 +548,6 @@ class DatasetRecorder {
     this.startTime = performance.now();
     this.frameCount = 0;
     this.hitCount = 0;
-    this.prevWristY = {};
-    this.prevTipY = {};
     this.updateUI();
     updateHitBadge("REC START", 1.2);
   }
@@ -525,156 +557,46 @@ class DatasetRecorder {
     this.isRecording = false;
     this.updateUI();
     updateHitBadge("REC STOP", 1.0);
-
-    // 録画停止後、直ちにスマホ対応コマ送り手動ラベリングモーダルを起動
-    if (this.records.length > 0) {
-      setTimeout(() => {
-        frameStepLabeler.open(this.records, this.sessionType, this.targetHand);
-      }, 100);
+    // 録画停止時にCSVダウンロードボタンをアクティブ化
+    if (this.records.length > 0 && recDownloadBtn) {
+      recDownloadBtn.classList.remove("disabled");
     }
   }
 
   toggle() {
-    if (this.isRecording) {
-      this.stop();
-    } else {
-      this.start();
-    }
+    if (this.isRecording) this.stop();
+    else this.start();
   }
 
-  /**
-   * 毎フレームの全指先・手首・動的特徴量・スナップショット画像の記録
-   */
-  recordFrame(handedness, landmarks, detectResult, timestampMs, cw, ch) {
+  recordFrame(handedness, landmarks, trackResult, timestampMs, cw, ch) {
     if (!this.isRecording) return;
     if (this.targetHand !== "Both" && this.targetHand !== handedness) return;
 
-    // 1. 手首（Landmark 0）
-    const wrist = landmarks[0];
-    const wristX = wrist.x * cw;
-    const wristY = wrist.y * ch;
-    const wristZ = wrist.z;
-
-    // 2. 5指の付け根 MCP（2: 親指, 5: 人差し指, 9: 中指, 13: 薬指, 17: 小指）
-    const mcp = {
-      thumb: landmarks[2],
-      index: landmarks[5],
-      middle: landmarks[9],
-      ring: landmarks[13],
-      pinky: landmarks[17]
-    };
-
-    // 3. 5指の先端 TIP（4: 親指, 8: 人差し指, 12: 中指, 16: 薬指, 20: 小指）
-    const tip = {
-      thumb: landmarks[4],
-      index: landmarks[8],
-      middle: landmarks[12],
-      ring: landmarks[16],
-      pinky: landmarks[20]
-    };
-
-    // 打鍵主軸指先（人差し指と中指の安定幾何中心）
-    const leadTipX = (tip.index.x + tip.middle.x) * 0.5 * cw;
-    const leadTipY = (tip.index.y + tip.middle.y) * 0.5 * ch;
-
-    // 手首と主指先の垂直変位
-    const prevWY = this.prevWristY[handedness] ?? wristY;
-    const prevTY = this.prevTipY[handedness] ?? leadTipY;
-    const wristDy = wristY - prevWY;
-    const tipDy = leadTipY - prevTY;
-    this.prevWristY[handedness] = wristY;
-    this.prevTipY[handedness] = leadTipY;
-
-    // 手の3D基準スケール L（手首〜中指MCP間の距離）
-    const dxL = (mcp.middle.x - wrist.x);
-    const dyL = (mcp.middle.y - wrist.y);
-    const dzL = (mcp.middle.z - wrist.z);
-    const handScaleL = Math.max(0.001, Math.sqrt(dxL * dxL + dyL * dyL + dzL * dzL));
-
-    // 指先と手首の相対高低差（机衝突時に指先が止まり手首が下がるのを捉える最重要パラメータ）
-    const relTipWristY = (leadTipY - wristY) / (ch * handScaleL);
-
-    // 初期ラベルの自動推定（TAPセッション時の初期候補、後からコマ送りで1タップで変更可能）
-    let isHit = 0;
-    if (this.sessionType === "tap") {
-      if (this.isSpacePressed || detectResult.isHit) {
-        isHit = 1;
-        this.hitCount++;
-        this.flashHitUi();
-      }
-    } else {
-      isHit = 0; // neg_* セッションは常にゼロ
+    this.frameCount++;
+    const isHit = this.isSpacePressed || trackResult.isHit ? 1 : 0;
+    if (isHit) {
+      this.hitCount++;
+      this.flashHitUi();
     }
 
-    this.frameCount++;
+    const { smoothWrist, smoothMcp, smoothTip, ry, dy, L } = trackResult;
 
-    // 1行のレコードを作成
-    const record = {
+    this.records.push({
       timestamp: Math.round(timestampMs),
       hand: handedness,
       session_type: this.sessionType,
-      // 手首
-      wrist_x: wrist.x.toFixed(5),
-      wrist_y: wrist.y.toFixed(5),
-      wrist_z: wrist.z.toFixed(5),
-      wrist_dy: wristDy.toFixed(2),
-      // 5指 MCP
-      thumb_mcp_x: mcp.thumb.x.toFixed(5),
-      thumb_mcp_y: mcp.thumb.y.toFixed(5),
-      thumb_mcp_z: mcp.thumb.z.toFixed(5),
-      index_mcp_x: mcp.index.x.toFixed(5),
-      index_mcp_y: mcp.index.y.toFixed(5),
-      index_mcp_z: mcp.index.z.toFixed(5),
-      middle_mcp_x: mcp.middle.x.toFixed(5),
-      middle_mcp_y: mcp.middle.y.toFixed(5),
-      middle_mcp_z: mcp.middle.z.toFixed(5),
-      ring_mcp_x: mcp.ring.x.toFixed(5),
-      ring_mcp_y: mcp.ring.y.toFixed(5),
-      ring_mcp_z: mcp.ring.z.toFixed(5),
-      pinky_mcp_x: mcp.pinky.x.toFixed(5),
-      pinky_mcp_y: mcp.pinky.y.toFixed(5),
-      pinky_mcp_z: mcp.pinky.z.toFixed(5),
-      // 5指 TIP
-      thumb_tip_x: tip.thumb.x.toFixed(5),
-      thumb_tip_y: tip.thumb.y.toFixed(5),
-      thumb_tip_z: tip.thumb.z.toFixed(5),
-      index_tip_x: tip.index.x.toFixed(5),
-      index_tip_y: tip.index.y.toFixed(5),
-      index_tip_z: tip.index.z.toFixed(5),
-      middle_tip_x: tip.middle.x.toFixed(5),
-      middle_tip_y: tip.middle.y.toFixed(5),
-      middle_tip_z: tip.middle.z.toFixed(5),
-      ring_tip_x: tip.ring.x.toFixed(5),
-      ring_tip_y: tip.ring.y.toFixed(5),
-      ring_tip_z: tip.ring.z.toFixed(5),
-      pinky_tip_x: tip.pinky.x.toFixed(5),
-      pinky_tip_y: tip.pinky.y.toFixed(5),
-      pinky_tip_z: tip.pinky.z.toFixed(5),
-      // 動的・幾何学的特徴量
-      lead_tip_x: (leadTipX / cw).toFixed(5),
-      lead_tip_y: (leadTipY / ch).toFixed(5),
-      lead_dy: tipDy.toFixed(2),
-      lead_stroke: detectResult.stroke.toFixed(2),
-      hand_scale_l: handScaleL.toFixed(5),
-      rel_tip_wrist_y: relTipWristY.toFixed(4),
-      // 正解ラベル
-      is_hit: isHit,
-      // レビューUI用内部キャッシュ（CSV出力時は除外）
-      rawLandmarks: landmarks,
-      imageBitmap: null
-    };
+      wrist_x: (smoothWrist.x / cw).toFixed(5),
+      wrist_y: (smoothWrist.y / ch).toFixed(5),
+      mcp_x: (smoothMcp.x / cw).toFixed(5),
+      mcp_y: (smoothMcp.y / ch).toFixed(5),
+      tip_x: (smoothTip.x / cw).toFixed(5),
+      tip_y: (smoothTip.y / ch).toFixed(5),
+      ry: ry.toFixed(4),
+      dy: dy.toFixed(2),
+      L: L.toFixed(5),
+      is_hit: isHit
+    });
 
-    // レビュープレビュー用縮小スナップショットの非同期キャプチャ（メイン推論をブロックしない）
-    if (window.createImageBitmap && video.videoWidth > 0 && video.videoHeight > 0) {
-      window
-        .createImageBitmap(video, { resizeWidth: 640, resizeHeight: 360, resizeQuality: "low" })
-        .then((bmp) => {
-          record.imageBitmap = bmp;
-        })
-        .catch(() => {});
-    }
-
-    this.records.push(record);
     this.updateMetrics();
   }
 
@@ -703,401 +625,34 @@ class DatasetRecorder {
       recDownloadBtn.classList.toggle("disabled", this.records.length === 0);
     }
   }
-}
 
-const datasetRecorder = new DatasetRecorder();
-
-// ==========================================================================
-// 4.6 スマホ対応・コマ送り手動ラベラー（FrameStepLabeler）
-// ==========================================================================
-class FrameStepLabeler {
-  constructor() {
-    this.isOpen = false;
-    this.records = [];
-    this.currentIndex = 0;
-    this.isPlaying = false;
-    this.playInterval = null;
-    this.sessionType = "tap";
-    this.targetHand = "Right";
-    this.canvas = labelerCanvas;
-    this.ctx = this.canvas ? this.canvas.getContext("2d") : null;
-  }
-
-  /**
-   * レビューモーダルを開き、録画データのコマ送り編集を開始
-   */
-  open(records, sessionType, targetHand) {
-    if (!records || records.length === 0) return;
-    this.records = records;
-    this.sessionType = sessionType;
-    this.targetHand = targetHand;
-    this.currentIndex = 0;
-    this.isPlaying = false;
-    clearInterval(this.playInterval);
-
-    if (labelerModal) labelerModal.classList.remove("hidden");
-    this.isOpen = true;
-
-    if (labelerSeekbar) {
-      labelerSeekbar.min = 0;
-      labelerSeekbar.max = records.length - 1;
-      labelerSeekbar.value = 0;
-    }
-
-    this.renderTimelineMarkers();
-    this.renderCurrentFrame();
-  }
-
-  close() {
-    this.isOpen = false;
-    this.isPlaying = false;
-    clearInterval(this.playInterval);
-    if (labelerModal) labelerModal.classList.add("hidden");
-
-    // メモリ上のImageBitmapリソースを安全に解放
-    this.records.forEach((r) => {
-      if (r.imageBitmap) {
-        try {
-          r.imageBitmap.close();
-        } catch (e) {}
-        r.imageBitmap = null;
-      }
-    });
-  }
-
-  /**
-   * タイムライン上の打鍵マーカードット再描画
-   */
-  renderTimelineMarkers() {
-    if (!timelineMarkerBar) return;
-    timelineMarkerBar.innerHTML = "";
-    const total = this.records.length;
-    if (total <= 1) return;
-
-    this.records.forEach((r, idx) => {
-      if (r.is_hit === 1) {
-        const dot = document.createElement("div");
-        dot.className = "marker-dot";
-        dot.style.left = `${(idx / (total - 1)) * 100}%`;
-        timelineMarkerBar.appendChild(dot);
-      }
-    });
-
-    const hitTotal = this.records.filter((r) => r.is_hit === 1).length;
-    if (labelerHitsBadge) {
-      labelerHitsBadge.textContent = `${hitTotal} HITS`;
-    }
-  }
-
-  /**
-   * 現在選択中フレームの描画（背景画像＋骨格＋マーカー）
-   */
-  renderCurrentFrame() {
-    if (!this.isOpen || this.records.length === 0 || !this.ctx) return;
-    const r = this.records[this.currentIndex];
-    if (!r) return;
-
-    if (this.canvas.width !== 640 || this.canvas.height !== 360) {
-      this.canvas.width = 640;
-      this.canvas.height = 360;
-    }
-
-    const cw = this.canvas.width;
-    const ch = this.canvas.height;
-    this.ctx.clearRect(0, 0, cw, ch);
-
-    // 1. スナップショット画像を描画
-    if (r.imageBitmap) {
-      this.ctx.drawImage(r.imageBitmap, 0, 0, cw, ch);
-    } else {
-      this.ctx.fillStyle = "#0c0c0c";
-      this.ctx.fillRect(0, 0, cw, ch);
-    }
-
-    // 2. 骨格ライン & 指先ノードの描画
-    if (r.rawLandmarks) {
-      this.drawRecordedSkeleton(r.rawLandmarks, cw, ch, r.is_hit === 1);
-    }
-
-    // 3. UIの同期
-    if (labelerSeekbar) labelerSeekbar.value = this.currentIndex;
-
-    if (labelerFrameBadge) {
-      labelerFrameBadge.textContent = `F: ${this.currentIndex + 1} / ${this.records.length}`;
-    }
-
-    if (labelerTimeBadge) {
-      const sec = (r.timestamp / 1000).toFixed(1);
-      labelerTimeBadge.textContent = `${sec}s`;
-    }
-
-    const isHit = r.is_hit === 1;
-    if (labelerHitIndicator) {
-      labelerHitIndicator.classList.toggle("hidden", !isHit);
-    }
-
-    if (btnToggleHit) {
-      btnToggleHit.classList.toggle("marked", isHit);
-      if (toggleHitLabel) {
-        toggleHitLabel.textContent = isHit ? "UNMARK HIT" : "MARK HIT";
-      }
-    }
-  }
-
-  /**
-   * 記録フレームの骨格・指先の描画
-   */
-  drawRecordedSkeleton(landmarks, cw, ch, isHit) {
-    this.ctx.save();
-    this.ctx.lineCap = "round";
-    this.ctx.lineJoin = "round";
-
-    // 骨格ライン
-    const fingerChains = [
-      [0, 1, 2, 3, 4],
-      [0, 5, 6, 7, 8],
-      [0, 9, 10, 11, 12],
-      [0, 13, 14, 15, 16],
-      [0, 17, 18, 19, 20]
-    ];
-
-    this.ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
-    this.ctx.lineWidth = 2.0;
-
-    fingerChains.forEach((chain) => {
-      this.ctx.beginPath();
-      chain.forEach((idx, i) => {
-        const x = landmarks[idx].x * cw;
-        const y = landmarks[idx].y * ch;
-        if (i === 0) this.ctx.moveTo(x, y);
-        else this.ctx.lineTo(x, y);
-      });
-      this.ctx.stroke();
-    });
-
-    // 関節ノード
-    landmarks.forEach((pt, idx) => {
-      const x = pt.x * cw;
-      const y = pt.y * ch;
-      const isTip = [4, 8, 12, 16, 20].includes(idx);
-      this.ctx.beginPath();
-      this.ctx.arc(x, y, isTip ? 4.5 : 2.5, 0, Math.PI * 2);
-      this.ctx.fillStyle = isTip ? "#ffffff" : "rgba(255, 255, 255, 0.6)";
-      this.ctx.fill();
-    });
-
-    // 打鍵主軸指先（8と12の重心）のハイライト
-    const p8 = landmarks[8];
-    const p12 = landmarks[12];
-    const leadX = (p8.x + p12.x) * 0.5 * cw;
-    const leadY = (p8.y + p12.y) * 0.5 * ch;
-
-    this.ctx.beginPath();
-    this.ctx.arc(leadX, leadY, isHit ? 16 : 8, 0, Math.PI * 2);
-    this.ctx.fillStyle = isHit ? "#ffffff" : "rgba(255, 255, 255, 0.85)";
-    if (isHit) {
-      this.ctx.shadowColor = "#ffffff";
-      this.ctx.shadowBlur = 25;
-    }
-    this.ctx.fill();
-
-    this.ctx.restore();
-  }
-
-  seekTo(idx) {
-    this.currentIndex = Math.max(0, Math.min(idx, this.records.length - 1));
-    this.renderCurrentFrame();
-  }
-
-  step(delta) {
-    this.seekTo(this.currentIndex + delta);
-  }
-
-  togglePlay() {
-    this.isPlaying = !this.isPlaying;
-    const iconPath = document.querySelector("#play-icon-svg path");
-    if (this.isPlaying) {
-      if (iconPath) iconPath.setAttribute("d", "M6 19h4V5H6v14zm8-14v14h4V5h-4z");
-      this.playInterval = setInterval(() => {
-        if (this.currentIndex >= this.records.length - 1) {
-          this.togglePlay();
-          return;
-        }
-        this.step(1);
-      }, 33);
-    } else {
-      if (iconPath) iconPath.setAttribute("d", "M8 5v14l11-7z");
-      clearInterval(this.playInterval);
-    }
-  }
-
-  toggleMarker() {
+  downloadCsv() {
     if (this.records.length === 0) return;
-    const cur = this.records[this.currentIndex];
-    cur.is_hit = cur.is_hit === 1 ? 0 : 1;
-
-    // マーカー設置時にドラム音を試聴再生（打鍵位置が直感的に確認できる）
-    if (cur.is_hit === 1 && drumEngine) {
-      drumEngine.ensureRunning();
-      drumEngine.playSnare(0.9);
-    }
-
-    this.renderTimelineMarkers();
-    this.renderCurrentFrame();
-  }
-
-  /**
-   * アノテーション済み完成版CSVのエクスポートとダウンロード
-   */
-  exportCsv() {
-    if (this.records.length === 0) return;
-
-    // 出力用ヘッダー（内部キャッシュ用キーは除外）
-    const sample = this.records[0];
-    const excludedKeys = new Set(["imageBitmap", "rawLandmarks"]);
-    const headers = Object.keys(sample).filter((k) => !excludedKeys.has(k));
-
+    const headers = Object.keys(this.records[0]);
     const csvLines = [headers.join(",")];
     for (const r of this.records) {
       csvLines.push(headers.map((h) => r[h]).join(","));
     }
     const csvString = csvLines.join("\n");
-
-    const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
-    const handStr = this.targetHand.toLowerCase();
-    const fileName = `drarm_${handStr}_${this.sessionType}_annotated_${nowStr}.csv`;
-
     const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = fileName;
+    const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+    a.download = `drarm_${this.targetHand.toLowerCase()}_${this.sessionType}_${nowStr}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-
-    updateHitBadge("CSV EXPORTED", 1.2);
-    this.close();
+    updateHitBadge("CSV DOWNLOADED", 1.2);
   }
 }
 
-const frameStepLabeler = new FrameStepLabeler();
+const datasetRecorder = new DatasetRecorder();
 
 // ==========================================================================
-// 5. 最下点ピーク反転検知（Extrema Detection）による確実な机面タップ検出
+// 7. ドラム発音・ゾーン判定・リップルエフェクト
 // ==========================================================================
-const MIN_COOLDOWN_MS = 55; // チャタリング防止クールダウン（55ms）
-
-class HandTrackerState {
-  constructor(name) {
-    this.name = name; // "Left" または "Right"
-    this.tapState = "IDLE"; // "IDLE" または "TOUCHED"
-    this.lastHitTime = 0;
-
-    // 垂直移動ヒストリ
-    this.prevY = null;
-    this.prevPrevY = null;
-    this.apexY = null; // 振り上げ時の頂点（Y最小）
-
-    // 指先座標の適応平滑化フィルタ（打鍵ピークの遅延を抑え、机面衝突の急停止をシャープに捕捉）
-    this.xf = new OneEuroFilter(2.5, 0.08);
-    this.yf = new OneEuroFilter(3.0, 0.08);
-  }
-
-  reset() {
-    this.tapState = "IDLE";
-    this.prevY = null;
-    this.prevPrevY = null;
-    this.apexY = null;
-    this.xf.reset();
-    this.yf.reset();
-  }
-
-  /**
-   * 最下点ピーク反転検知による打鍵判定
-   * 振り下ろし（下向き移動）から机面に衝突して「下がらなくなった／跳ね返った瞬間」を確実に捉える
-   */
-  updateAndDetect(rawX, rawY, timestampMs, canvasWidth, canvasHeight) {
-    const smoothX = this.xf.filter(rawX, timestampMs);
-    const smoothY = this.yf.filter(rawY, timestampMs);
-    const now = performance.now();
-
-    if (this.prevY === null) {
-      this.prevY = smoothY;
-      this.prevPrevY = smoothY;
-      this.apexY = smoothY;
-      return { x: smoothX, y: smoothY, isHit: false, stroke: 0, dy: 0 };
-    }
-
-    const dy = smoothY - this.prevY;            // 現フレーム垂直変位（下向きが正）
-    const prevDy = this.prevY - this.prevPrevY; // 前フレーム垂直変位
-
-    let isHit = false;
-    let stroke = 0;
-
-    // 軽い指先タップも確実に拾う最小ストローク幅（画面高さの約0.8%または最低5px）
-    const minStrokePx = Math.max(5, canvasHeight * 0.008);
-
-    if (this.tapState === "IDLE") {
-      // 指が上向きに動いている間、頂点（最も高い位置）を更新
-      if (dy < 0) {
-        if (this.apexY === null || smoothY < this.apexY) {
-          this.apexY = smoothY;
-        }
-      }
-
-      // 振り下ろしストローク量
-      stroke = this.apexY !== null ? (smoothY - this.apexY) : 0;
-
-      // 【机面最下点（反転）の判定】
-      // 1. 直前フレームで下向きに動いていた（prevDy >= 0.8px）
-      // 2. 十分な下向きの振り下ろし幅があった（stroke >= minStrokePx）
-      // 3. 現フレームで下向き移動が急停止、または上向きに反転した（dy <= 0.8px）
-      const wasMovingDown = prevDy >= 0.8 && stroke >= minStrokePx;
-      const isBottomReached = dy <= 0.8;
-
-      if (wasMovingDown && isBottomReached) {
-        if (now - this.lastHitTime >= MIN_COOLDOWN_MS) {
-          this.tapState = "TOUCHED";
-          this.lastHitTime = now;
-          isHit = true;
-
-          // 打鍵強度（ストロークと下降速度に応じたダイナミクス）
-          const intensity = Math.min(1.4, Math.max(0.7, 0.75 + (stroke / (canvasHeight * 0.08)) * 0.5));
-
-          // ドラム発音 & 視覚フィードバック
-          triggerDrumHit(smoothX, smoothY, intensity * 3500, canvasWidth, canvasHeight);
-        }
-      }
-    } else if (this.tapState === "TOUCHED") {
-      // 【リフト復帰判定】
-      // 指先が机面からわずかに浮上した（dy <= -0.8px）、または45ms静止した
-      const isLifting = dy <= -0.8;
-      const isSettled = now - this.lastHitTime >= 45;
-
-      if (isLifting || isSettled) {
-        this.tapState = "IDLE";
-        this.apexY = smoothY; // 新しい頂点基準に更新
-      }
-    }
-
-    this.prevPrevY = this.prevY;
-    this.prevY = smoothY;
-
-    return { x: smoothX, y: smoothY, isHit: isHit, stroke: stroke, dy: dy };
-  }
-}
-
-// 左右の手それぞれに専用のトラッカーを固定（フレーム間の入れ替わり混線を完全防止）
-const handTrackers = {
-  Left: new HandTrackerState("Left"),
-  Right: new HandTrackerState("Right")
-};
-
-/**
- * リアルタイムHITバッジ表示の更新
- */
 function updateHitBadge(label, intensity) {
   if (!hudHit) return;
   const powerPct = Math.round(Math.min(100, (intensity / 1.4) * 100));
@@ -1108,25 +663,19 @@ function updateHitBadge(label, intensity) {
   }, 130);
 }
 
-/**
- * ドラム発音と視覚演出の発火
- */
 function triggerDrumHit(canvasX, canvasY, impactAcc, canvasWidth, canvasHeight) {
-  // オーディオコンテキストの稼働を保証
   drumEngine.ensureRunning();
 
-  // インカメラ映像は scaleX(-1) で鏡像表示されているため:
-  // ユーザーが画面左側（CYMBAL）に手を出した時: カメラ生座標 canvasX > canvasWidth / 2
-  // ユーザーが画面右側（DRUM）に手を出した時: カメラ生座標 canvasX <= canvasWidth / 2
+  // インカメラは scaleX(-1) 反転表示
+  // 画面左側（CYMBAL）: 生座標 canvasX > canvasWidth / 2
+  // 画面右側（DRUM）: 生座標 canvasX <= canvasWidth / 2
   const isCymbalSide = canvasX > (canvasWidth / 2);
-
-  const normalizedY = canvasY / canvasHeight; // 0 (上) 〜 1 (下: 机面)
+  const normalizedY = canvasY / canvasHeight;
   const intensity = Math.min(1.4, Math.max(0.65, impactAcc / 3500));
 
   let soundLabel = "";
 
   if (isCymbalSide) {
-    // 【シンバルエリア：画面左側】
     if (normalizedY < 0.45 || intensity > 1.15) {
       soundLabel = "CRASH";
       drumEngine.playCrash(intensity);
@@ -1138,7 +687,6 @@ function triggerDrumHit(canvasX, canvasY, impactAcc, canvasWidth, canvasHeight) 
       flashZone(zoneCymbal, soundLabel, intensity);
     }
   } else {
-    // 【通常ドラムエリア：画面右側】
     if (normalizedY > 0.65) {
       soundLabel = "KICK";
       drumEngine.playKick(intensity);
@@ -1154,13 +702,9 @@ function triggerDrumHit(canvasX, canvasY, impactAcc, canvasWidth, canvasHeight) 
     }
   }
 
-  // 白黒波紋リップルエフェクト生成
   createRipple(canvasX, canvasY, intensity);
 }
 
-/**
- * ゾーン背景の瞬間フラッシュ & HUD更新
- */
 function flashZone(element, label, intensity = 1.0) {
   if (element) {
     element.classList.add("hit-flash");
@@ -1171,11 +715,8 @@ function flashZone(element, label, intensity = 1.0) {
   updateHitBadge(label, intensity);
 }
 
-// ==========================================================================
-// 6. 白黒ミニマル・リップルエフェクト（完全ボーダーレス波紋）
-// ==========================================================================
+// 白黒ミニマル波紋エフェクト
 const ripples = [];
-
 function createRipple(x, y, intensity) {
   ripples.push({
     x: x,
@@ -1200,7 +741,6 @@ function renderRipples() {
       continue;
     }
 
-    // 枠線（stroke）ではなく、面の柔らかなグラデーション円で表現
     const grad = effectCtx.createRadialGradient(r.x, r.y, 0, r.x, r.y, r.radius);
     grad.addColorStop(0, `rgba(255, 255, 255, ${r.alpha * 0.4})`);
     grad.addColorStop(0.7, `rgba(255, 255, 255, ${r.alpha * 0.2})`);
@@ -1217,15 +757,12 @@ function renderRipples() {
 requestAnimationFrame(renderRipples);
 
 // ==========================================================================
-// 7. カメラ映像・MediaPipe HandLandmarker 統合
+// 8. MediaPipe HandLandmarker ＆ カメラパイプライン
 // ==========================================================================
 let handLandmarker = null;
 let showTrackingLines = true;
 let isVideoReady = false;
 
-/**
- * MediaPipe HandLandmarker の初期化
- */
 async function setupHandLandmarker() {
   try {
     if (noticeText) noticeText.textContent = "LOADING VISION MODEL";
@@ -1235,7 +772,6 @@ async function setupHandLandmarker() {
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
 
-    // モデルアセットのパス解決（ローカル優先、CDNへフォールバック）
     const candidatePaths = [
       "./models/hand_landmarker.task",
       "/models/hand_landmarker.task",
@@ -1250,9 +786,7 @@ async function setupHandLandmarker() {
           resolvedModelPath = p;
           break;
         }
-      } catch (e) {
-        // 次の候補を試行
-      }
+      } catch (e) {}
     }
 
     handLandmarker = await HandLandmarker.createFromOptions(vision, {
@@ -1268,16 +802,13 @@ async function setupHandLandmarker() {
     });
 
     if (noticeModal) noticeModal.classList.add("hidden");
-    console.log(`[VISION] Hand Landmarker initialized successfully with ${resolvedModelPath}`);
+    console.log(`[VISION] Hand Landmarker initialized with ${resolvedModelPath}`);
   } catch (err) {
     console.error("[VISION] Hand Landmarker load failed:", err);
     if (noticeText) noticeText.textContent = "VISION INITIALIZE FAILED";
   }
 }
 
-/**
- * Webカメラの起動と解像度同期
- */
 async function setupCamera() {
   try {
     const constraints = {
@@ -1308,11 +839,6 @@ async function setupCamera() {
   }
 }
 
-/**
- * ビデオの生解像度にCanvasを1:1完全一致させる（Piarno 1D方式）
- * CSSの object-fit: cover によりブラウザが同一倍率・同一クリッピングで拡大描画するため、
- * 複雑なアスペクト比計算を全廃し、GPU/CPU負荷を最小化して超低遅延を実現します。
- */
 function updateCanvasResolution() {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
@@ -1332,16 +858,11 @@ window.addEventListener("resize", updateCanvasResolution);
 video.addEventListener("resize", updateCanvasResolution);
 
 // ==========================================================================
-// 8. カメラ同期推論ループ（Piarno 1Dパイプライン）
+// 9. カメラ同期推論ループ & Piarno完全準拠描画
 // ==========================================================================
 let lastVideoTimestamp = -1;
 let isPredicting = false;
-let animationFrameId = null;
 
-/**
- * requestVideoFrameCallbackによるカメラ物理フレーム到着同期
- * 無駄な重複推論とスキップを全廃し、安定した60fps追従を保証
- */
 function schedulePredictLoop() {
   if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
     video.requestVideoFrameCallback((now, metadata) => {
@@ -1350,53 +871,41 @@ function schedulePredictLoop() {
       schedulePredictLoop();
     });
   } else {
-    animationFrameId = requestAnimationFrame((now) => {
+    requestAnimationFrame((now) => {
       processVideoFrame(now);
       schedulePredictLoop();
     });
   }
 }
 
-/**
- * 毎フレームの推論・描画ループ（厳密単調増加タイムスタンプ保証・左右手固定ロック）
- */
 function processVideoFrame(frameTime) {
   if (!isVideoReady || !handLandmarker) return;
   if (video.paused || video.ended || video.readyState < 2) return;
-
-  // 二重推論・コールバック詰まりの防止
   if (isPredicting) return;
   isPredicting = true;
 
   try {
     updateCanvasResolution();
 
-    // 【フリーズ根絶の最重要仕様】MediaPipe Tasks Vision C++エンジンのタイムスタンプ単調増加を保証
-    // 前フレームと同一または逆転したタイムスタンプが渡されると内部アサートエラーでフリーズするため、
-    // 必ず前フレームのタイムスタンプより +1.0ms 以上進んでいることを保証する
     const now = typeof frameTime === "number" && !isNaN(frameTime) ? frameTime : performance.now();
     const timestampMs = Math.max(now, lastVideoTimestamp + 1.0);
     lastVideoTimestamp = timestampMs;
 
-    // 推論実行
     const results = handLandmarker.detectForVideo(video, timestampMs);
-
     canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (results && results.landmarks && results.landmarks.length > 0) {
       const activeLabels = new Set();
-      let maxAy = 0;
-      let maxVy = 0;
-
+      let maxRy = 0;
+      let maxDy = 0;
       const cw = canvas.width;
       const ch = canvas.height;
 
       for (let i = 0; i < results.landmarks.length; i++) {
         const landmarks = results.landmarks[i];
 
-        // 左右の手のラベル（Left / Right）を確定し、専用トラッカーに固定割り当て
         let handedness = "Right";
-        if (results.handednesses && results.handednesses[i] && results.handednesses[i][0]) {
+        if (results.handednesses?.[i]?.[0]) {
           handedness = results.handednesses[i][0].categoryName;
         } else {
           handedness = i === 0 ? "Right" : "Left";
@@ -1404,45 +913,28 @@ function processVideoFrame(frameTime) {
         activeLabels.add(handedness);
 
         const state = handTrackers[handedness];
+        const trackResult = state.update(landmarks, timestampMs, cw, ch);
 
-        // 各指先（TIP）ピクセル座標の取得
-        const tips = [4, 8, 12, 16, 20].map((idx) => ({
-          id: idx,
-          x: landmarks[idx].x * cw,
-          y: landmarks[idx].y * ch
-        }));
-
-        // 打鍵の主軸指先：人差し指先端(8)と中指先端(12)の安定幾何中心
-        const primaryTipX = (tips[1].x + tips[2].x) * 0.5;
-        const primaryTipY = (tips[1].y + tips[2].y) * 0.5;
-
-        // 最下点ピーク反転検知（振り下ろしから机面に衝突して止まった瞬間を100%検出）
-        const detectResult = state.updateAndDetect(primaryTipX, primaryTipY, timestampMs, cw, ch);
-
-        // 学習用データセット録画（全指先＋手首＋幾何学的変位の記録）
         if (datasetRecorder.isRecording) {
-          datasetRecorder.recordFrame(handedness, landmarks, detectResult, timestampMs, cw, ch);
+          datasetRecorder.recordFrame(handedness, landmarks, trackResult, timestampMs, cw, ch);
         }
 
-        // 指先マーカーおよび全指骨格ラインの描画
         if (showTrackingLines) {
-          drawFingertipTrackingLines(landmarks, cw, ch, tips, detectResult.x, detectResult.y, state.tapState);
+          drawPiarnoHand(landmarks, cw, ch, trackResult, state.tapState);
         }
 
-        if (detectResult.stroke > maxAy) maxAy = detectResult.stroke;
-        if (Math.abs(detectResult.dy) > maxVy) maxVy = Math.abs(detectResult.dy);
+        if (trackResult.ry > maxRy) maxRy = trackResult.ry;
+        if (Math.abs(trackResult.dy) > maxDy) maxDy = Math.abs(trackResult.dy);
       }
 
-      // 画面から外れた手のリセット
       for (const label of ["Left", "Right"]) {
         if (!activeLabels.has(label)) {
           handTrackers[label].reset();
         }
       }
 
-      // HUDのリアルタイム更新（振り下ろしストローク量 S と現フレーム変位 dY）
-      if (hudAcc) hudAcc.textContent = `S:${Math.round(maxAy)}px`;
-      if (hudVel) hudVel.textContent = `dY:${maxVy.toFixed(1)}`;
+      if (hudAcc) hudAcc.textContent = `ry:${maxRy >= 0 ? "+" : ""}${maxRy.toFixed(2)}`;
+      if (hudVel) hudVel.textContent = `dy:${maxDy.toFixed(1)}`;
     } else {
       handTrackers.Left.reset();
       handTrackers.Right.reset();
@@ -1450,91 +942,130 @@ function processVideoFrame(frameTime) {
       if (hudVel) hudVel.textContent = "-";
     }
   } catch (err) {
-    console.error("[PREDICT] Frame processing error:", err);
+    console.error("[PREDICT] Frame error:", err);
   } finally {
     isPredicting = false;
   }
 }
 
 /**
- * 指先優先トラッキングライン（完全ボーダーレス・洗練された幾何学骨格と指先マーカー）の描画
+ * Piarno完全準拠の骨格＆指先マーカー描画
  */
-function drawFingertipTrackingLines(landmarks, cw, ch, tips, filteredX, filteredY, tapState) {
+function drawPiarnoHand(landmarks, cw, ch, trackResult, tapState) {
   canvasCtx.save();
   canvasCtx.lineCap = "round";
   canvasCtx.lineJoin = "round";
 
-  // 1. 各指の関節骨格ライン（手首から各指先まで）
-  const fingerChains = [
-    [0, 1, 2, 3, 4],     // 親指
-    [0, 5, 6, 7, 8],     // 人差し指
-    [0, 9, 10, 11, 12],  // 中指
-    [0, 13, 14, 15, 16], // 薬指
-    [0, 17, 18, 19, 20]  // 小指
-  ];
+  // 1. 他の指・手のひら（Piarnoと同じく極めて薄いグレースケールで描画）
+  canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  canvasCtx.lineWidth = 1;
 
-  canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.55)";
-  canvasCtx.lineWidth = 2.0;
-
-  fingerChains.forEach((chain) => {
+  OTHER_CONNECTIONS.forEach(([startIdx, endIdx]) => {
+    const p1 = landmarks[startIdx];
+    const p2 = landmarks[endIdx];
     canvasCtx.beginPath();
-    canvasCtx.moveTo(landmarks[chain[0]].x * cw, landmarks[chain[0]].y * ch);
-    for (let j = 1; j < chain.length; j++) {
-      canvasCtx.lineTo(landmarks[chain[j]].x * cw, landmarks[chain[j]].y * ch);
-    }
+    canvasCtx.moveTo(p1.x * cw, p1.y * ch);
+    canvasCtx.lineTo(p2.x * cw, p2.y * ch);
     canvasCtx.stroke();
   });
 
-  // 2. 指の付け根（MCPアーチ）ライン
-  canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.75)";
-  canvasCtx.lineWidth = 2.6;
-  canvasCtx.beginPath();
-  canvasCtx.moveTo(landmarks[5].x * cw, landmarks[5].y * ch);
-  canvasCtx.lineTo(landmarks[9].x * cw, landmarks[9].y * ch);
-  canvasCtx.lineTo(landmarks[13].x * cw, landmarks[13].y * ch);
-  canvasCtx.lineTo(landmarks[17].x * cw, landmarks[17].y * ch);
-  canvasCtx.stroke();
-
-  // 3. 全指先のマーカーノード（白丸）
-  tips.forEach((t) => {
+  // 人差し指以外の関節点（極小薄グレー）
+  landmarks.forEach((p, idx) => {
+    if (INDEX_LANDMARK_INDICES.includes(idx)) return;
     canvasCtx.beginPath();
-    canvasCtx.arc(t.x, t.y, 4.5, 0, Math.PI * 2);
-    canvasCtx.fillStyle = "rgba(255, 255, 255, 0.85)";
+    canvasCtx.arc(p.x * cw, p.y * ch, 2, 0, Math.PI * 2);
+    canvasCtx.fillStyle = "rgba(255, 255, 255, 0.15)";
     canvasCtx.fill();
   });
 
-  // 4. 主動打鍵指先（Lead Fingertip）の追従ターゲットマーカー
-  const isHit = tapState === "TOUCHED";
+  const { smoothMcp, smoothPip, smoothDip, smoothTip } = trackResult;
+
+  // 2. 人差し指の骨格ライン（ブレのない独立PointFilter平滑化ライン）
+  canvasCtx.strokeStyle = "#ffffff";
+  canvasCtx.lineWidth = 3;
   canvasCtx.beginPath();
-  canvasCtx.arc(filteredX, filteredY, isHit ? 16 : 8, 0, Math.PI * 2);
-  canvasCtx.fillStyle = isHit ? "#ffffff" : "rgba(255, 255, 255, 0.95)";
-  canvasCtx.shadowColor = "#ffffff";
-  canvasCtx.shadowBlur = isHit ? 28 : 12;
+  canvasCtx.moveTo(smoothMcp.x, smoothMcp.y);
+  canvasCtx.lineTo(smoothPip.x, smoothPip.y);
+  canvasCtx.lineTo(smoothDip.x, smoothDip.y);
+  canvasCtx.lineTo(smoothTip.x, smoothTip.y);
+  canvasCtx.stroke();
+
+  // 3. 人差し指関節点（5: MCP, 6: PIP, 7: DIP）白丸
+  [smoothMcp, smoothPip, smoothDip].forEach((pt) => {
+    canvasCtx.beginPath();
+    canvasCtx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+    canvasCtx.fillStyle = "#ffffff";
+    canvasCtx.fill();
+  });
+
+  // 4. 人差し指先端（TIP: Landmark 8）のPiarno十字ターゲット丸マーク描画
+  const isTouched = tapState === "TOUCHED";
+  drawTipTargetMark(smoothTip.x, smoothTip.y, isTouched);
+
+  canvasCtx.restore();
+}
+
+/**
+ * Piarno完全準拠の指先十字ターゲット丸マーク描画
+ * @param {number} x TIP X座標
+ * @param {number} y TIP Y座標
+ * @param {boolean} isTouched 机面接触中フラグ（白熱グロー表示）
+ */
+function drawTipTargetMark(x, y, isTouched = false) {
+  canvasCtx.save();
+
+  if (isTouched) {
+    canvasCtx.shadowColor = "#ffffff";
+    canvasCtx.shadowBlur = 24;
+  }
+
+  // 外側のターゲットサークル
+  const outerR = isTouched ? 13 : 9;
+  canvasCtx.beginPath();
+  canvasCtx.arc(x, y, outerR, 0, Math.PI * 2);
+  canvasCtx.strokeStyle = "#ffffff";
+  canvasCtx.lineWidth = isTouched ? 2.5 : 2.0;
+  canvasCtx.stroke();
+
+  // 十字ターゲットインジケータ（水平・垂直線）
+  const crossInner = isTouched ? 6 : 5;
+  const crossOuter = isTouched ? 16 : 13;
+  canvasCtx.strokeStyle = "#ffffff";
+  canvasCtx.lineWidth = 1.5;
+  canvasCtx.beginPath();
+  // 水平線
+  canvasCtx.moveTo(x - crossOuter, y);
+  canvasCtx.lineTo(x - crossInner, y);
+  canvasCtx.moveTo(x + crossInner, y);
+  canvasCtx.lineTo(x + crossOuter, y);
+  // 垂直線
+  canvasCtx.moveTo(x, y - crossOuter);
+  canvasCtx.lineTo(x, y - crossInner);
+  canvasCtx.moveTo(x, y + crossInner);
+  canvasCtx.lineTo(x, y + crossOuter);
+  canvasCtx.stroke();
+
+  // 中心ターゲット丸
+  const centerR = isTouched ? 5.0 : 3.5;
+  canvasCtx.beginPath();
+  canvasCtx.arc(x, y, centerR, 0, Math.PI * 2);
+  canvasCtx.fillStyle = "#ffffff";
   canvasCtx.fill();
 
   canvasCtx.restore();
 }
 
 // ==========================================================================
-// 9. イベントリスナーと初期化フロー
+// 10. イベントリスナーと初期化フロー
 // ==========================================================================
-
-/**
- * オーディオのアンロック（確実な音声初期化 ＆ 即時テスト発音）
- */
 async function unlockAudio() {
-  if (audioStartOverlay) {
-    audioStartOverlay.classList.add("hidden");
-  }
+  if (audioStartOverlay) audioStartOverlay.classList.add("hidden");
   await drumEngine.init();
   drumEngine.playKick(1.1);
   updateHitBadge("AUDIO UNLOCKED", 1.0);
 }
 
-// 中央オーバーレイのクリック/タップでアンロック
-if (audioStartOverlay) {
-  audioStartOverlay.addEventListener("click", unlockAudio);
-}
+if (audioStartOverlay) audioStartOverlay.addEventListener("click", unlockAudio);
 if (audioStartBtn) {
   audioStartBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1542,7 +1073,6 @@ if (audioStartBtn) {
   });
 }
 
-// 音声テストボタン（右上ナビゲーション・スネア/キック試聴）
 if (testAudioBtn) {
   testAudioBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -1553,18 +1083,16 @@ if (testAudioBtn) {
   });
 }
 
-// 画面全体のタップでもオーディオアンロック ＆ クリックでのドラムテスト発音
+// 画面全体のタップでもオーディオアンロック & クリックでのドラムテスト発音
 window.addEventListener("pointerdown", async (e) => {
   if (!drumEngine.isReady) {
     await unlockAudio();
   }
 
-  // コントロールボタン・ナビゲーション領域のタップは除外
   if (e.target && typeof e.target.closest === "function" && (e.target.closest("button") || e.target.closest("nav"))) {
     return;
   }
 
-  // 画面上のクリック位置をCanvas座標系にマッピング（鏡像反転考慮）
   const rect = canvas.getBoundingClientRect();
   const screenXRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
   const screenYRatio = Math.max(0, Math.min(1, (e.clientY - rect.top) / (rect.height || 1)));
@@ -1574,39 +1102,36 @@ window.addEventListener("pointerdown", async (e) => {
   triggerDrumHit(canvasX, canvasY, 3200, canvas.width, canvas.height);
 });
 
-// デバッグ・テスト用グローバル関数
-window.triggerDrumHit = triggerDrumHit;
-window.drumEngine = drumEngine;
-window.unlockAudio = unlockAudio;
-
 // トラッキングライン表示切替
-toggleTrackingBtn.addEventListener("click", () => {
-  showTrackingLines = !showTrackingLines;
-  toggleTrackingBtn.classList.toggle("active", showTrackingLines);
-});
+if (toggleTrackingBtn) {
+  toggleTrackingBtn.addEventListener("click", () => {
+    showTrackingLines = !showTrackingLines;
+    toggleTrackingBtn.classList.toggle("active", showTrackingLines);
+  });
+}
 
 // カメラ再起動
-refreshCameraBtn.addEventListener("click", async () => {
-  isVideoReady = false;
-  isPredicting = false;
-  lastVideoTimestamp = -1;
-  handTrackers.Left.reset();
-  handTrackers.Right.reset();
-  await setupCamera();
-});
+if (refreshCameraBtn) {
+  refreshCameraBtn.addEventListener("click", async () => {
+    isVideoReady = false;
+    isPredicting = false;
+    lastVideoTimestamp = -1;
+    handTrackers.Left.reset();
+    handTrackers.Right.reset();
+    await setupCamera();
+  });
+}
 
 // フルスクリーン切替
-fullscreenBtn.addEventListener("click", () => {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen().catch(() => {});
-  } else {
-    document.exitFullscreen().catch(() => {});
-  }
-});
-
-// ==========================================================================
-// 10. 学習用データセット録画UIのイベントリスナー
-// ==========================================================================
+if (fullscreenBtn) {
+  fullscreenBtn.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
+}
 
 // 録画パネルの表示 / 非表示トグル
 if (toggleRecorderBtn && recorderPanel) {
@@ -1626,11 +1151,11 @@ if (recActionBtn) {
 // CSVダウンロードボタン
 if (recDownloadBtn) {
   recDownloadBtn.addEventListener("click", () => {
-    datasetRecorder.downloadLastCsv();
+    datasetRecorder.downloadCsv();
   });
 }
 
-// セグメントボタン（セッション種別 & 対象手切り替え）
+// セグメントボタン
 recSegBtns.forEach((btn) => {
   btn.addEventListener("click", () => {
     const sessionType = btn.dataset.type;
@@ -1650,73 +1175,10 @@ recSegBtns.forEach((btn) => {
   });
 });
 
-// ==========================================================================
-// 11. スマホ対応コマ送り手動ラベラーのイベントリスナー
-// ==========================================================================
-
-// シークバースライダー
-if (labelerSeekbar) {
-  labelerSeekbar.addEventListener("input", (e) => {
-    const val = parseInt(e.target.value, 10);
-    frameStepLabeler.seekTo(val);
-  });
-}
-
-// コマ送りナビゲーション
-if (btnStepPrev5) btnStepPrev5.addEventListener("click", () => frameStepLabeler.step(-5));
-if (btnStepPrev1) btnStepPrev1.addEventListener("click", () => frameStepLabeler.step(-1));
-if (btnStepPlay) btnStepPlay.addEventListener("click", () => frameStepLabeler.togglePlay());
-if (btnStepNext1) btnStepNext1.addEventListener("click", () => frameStepLabeler.step(1));
-if (btnStepNext5) btnStepNext5.addEventListener("click", () => frameStepLabeler.step(5));
-
-// 打鍵マーカートグルボタン
-if (btnToggleHit) {
-  btnToggleHit.addEventListener("click", () => {
-    frameStepLabeler.toggleMarker();
-  });
-}
-
-// 破棄 / 閉じる
-if (btnLabelerDiscard) {
-  btnLabelerDiscard.addEventListener("click", () => {
-    frameStepLabeler.close();
-  });
-}
-
-// アノテーション済みCSVエクスポート
-if (btnLabelerExport) {
-  btnLabelerExport.addEventListener("click", () => {
-    frameStepLabeler.exportCsv();
-  });
-}
-
 // キーボードショートカット操作
 window.addEventListener("keydown", (e) => {
-  // 入力フィールドにフォーカスがある場合は無視
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
 
-  // レビューモーダル表示中のショートカット
-  if (frameStepLabeler.isOpen) {
-    if (e.code === "ArrowLeft") {
-      e.preventDefault();
-      frameStepLabeler.step(e.shiftKey ? -5 : -1);
-    } else if (e.code === "ArrowRight") {
-      e.preventDefault();
-      frameStepLabeler.step(e.shiftKey ? 5 : 1);
-    } else if (e.code === "Space" || e.code === "KeyM") {
-      e.preventDefault();
-      frameStepLabeler.toggleMarker();
-    } else if (e.code === "KeyP") {
-      e.preventDefault();
-      frameStepLabeler.togglePlay();
-    } else if (e.code === "Escape") {
-      e.preventDefault();
-      frameStepLabeler.close();
-    }
-    return;
-  }
-
-  // 通常時のショートカット
   if (e.code === "KeyR" && !e.repeat) {
     e.preventDefault();
     datasetRecorder.toggle();
@@ -1749,16 +1211,15 @@ window.addEventListener("keyup", (e) => {
 });
 
 // デバッグ用グローバル参照
+window.triggerDrumHit = triggerDrumHit;
+window.drumEngine = drumEngine;
 window.datasetRecorder = datasetRecorder;
-window.frameStepLabeler = frameStepLabeler;
 
 // アプリケーション起動
 async function main() {
   await loadPiarnoDataset();
   await setupHandLandmarker();
   await setupCamera();
-
-  // カメラ同期推論ループ開始
   schedulePredictLoop();
 }
 

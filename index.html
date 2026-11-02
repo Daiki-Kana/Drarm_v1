@@ -141,67 +141,6 @@
           <span id="notice-text" class="notice-text">INITIALIZING</span>
         </div>
       </div>
-
-      <!-- スマホ対応・コマ送り手動ラベリングモーダル（完全ボーダーレス・親指タッチUI） -->
-      <section id="labeler-modal" class="labeler-modal hidden" aria-label="Frame Step Labeler">
-        <!-- レビュープレビューCanvas（記録されたフレーム画像＋骨格描画） -->
-        <div class="labeler-preview-container">
-          <canvas id="labeler-canvas"></canvas>
-          <div id="labeler-hit-indicator" class="labeler-hit-indicator hidden">HIT MARKED</div>
-        </div>
-
-        <!-- 下部操作パネル（スマホ片手親指操作に最適化） -->
-        <div class="labeler-dock">
-          <!-- タイムライン & シークバースライダー -->
-          <div class="timeline-track-wrap">
-            <div id="timeline-marker-bar" class="timeline-marker-bar" aria-hidden="true"></div>
-            <input
-              type="range"
-              id="labeler-seekbar"
-              class="labeler-seekbar"
-              min="0"
-              max="0"
-              value="0"
-              step="1"
-              aria-label="Timeline Scrubber"
-            />
-          </div>
-
-          <!-- メインコントロール行（コマ送りナビ ＆ マーカーボタン） -->
-          <div class="labeler-control-row">
-            <div class="step-nav-group">
-              <button id="btn-step-prev5" class="step-nav-btn" aria-label="Back 5 frames">-5F</button>
-              <button id="btn-step-prev1" class="step-nav-btn" aria-label="Back 1 frame">-1F</button>
-              <button id="btn-step-play" class="step-nav-btn play-btn" aria-label="Play / Pause">
-                <svg viewBox="0 0 24 24" class="btn-svg" id="play-icon-svg" aria-hidden="true">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              </button>
-              <button id="btn-step-next1" class="step-nav-btn" aria-label="Forward 1 frame">+1F</button>
-              <button id="btn-step-next5" class="step-nav-btn" aria-label="Forward 5 frames">+5F</button>
-            </div>
-
-            <!-- 打鍵マーカートグルボタン（親指で最も押しやすい特大カプセル） -->
-            <button id="btn-toggle-hit" class="hit-toggle-btn" aria-label="Toggle Hit Marker (Shortcut: Space)">
-              <span id="toggle-hit-label">MARK HIT</span>
-            </button>
-          </div>
-
-          <!-- フッター情報 & アクション行 -->
-          <div class="labeler-footer-row">
-            <div class="labeler-info">
-              <span id="labeler-frame-badge" class="info-badge">F: 0 / 0</span>
-              <span id="labeler-time-badge" class="info-badge">00.0s</span>
-              <span id="labeler-hits-badge" class="info-badge">0 HITS</span>
-            </div>
-
-            <div class="labeler-actions">
-              <button id="btn-labeler-discard" class="action-btn discard-btn" title="Discard session">DISCARD</button>
-              <button id="btn-labeler-export" class="action-btn export-btn" title="Save annotated CSV">EXPORT CSV</button>
-            </div>
-          </div>
-        </div>
-      </section>
     </div>
 
     <!-- アプリケーション本体 -->
