@@ -1362,48 +1362,73 @@ let showTrackingLines = true;
 let isVideoReady = false;
 
 async function setupHandLandmarker() {
-  try {
-    if (noticeText) noticeText.textContent = "LOADING VISION MODEL";
-    if (noticeModal) noticeModal.classList.remove("hidden");
+  if (noticeModal) noticeModal.classList.remove("hidden");
+  if (noticeText) noticeText.textContent = "INITIALIZING VISION ENGINE";
 
+  try {
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
 
-    const candidatePaths = [
-      "./models/hand_landmarker.task",
-      "/models/hand_landmarker.task",
+    // ローカルモデルを最優先、次に絶対パス、最後に公式CDN
+    const modelCandidates = [
+      new URL("./models/hand_landmarker.task", window.location.href).href,
+      new URL("/models/hand_landmarker.task", window.location.origin).href,
       "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
     ];
 
-    let resolvedModelPath = candidatePaths[candidatePaths.length - 1];
-    for (const p of candidatePaths) {
-      try {
-        const headRes = await fetch(p, { method: "HEAD" });
-        if (headRes.ok) {
-          resolvedModelPath = p;
+    let createdInstance = null;
+    let successfulPath = "";
+    let successfulDelegate = "";
+    let lastError = null;
+
+    // モデル候補 × デリゲート（GPU → CPU自動フォールバック）を順次試行
+    for (const modelPath of modelCandidates) {
+      if (createdInstance) break;
+
+      for (const delegate of ["GPU", "CPU"]) {
+        try {
+          if (noticeText) {
+            noticeText.textContent = delegate === "GPU" 
+              ? "LOADING VISION MODEL (GPU)" 
+              : "FALLING BACK TO CPU DELEGATE";
+          }
+          createdInstance = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: modelPath,
+              delegate
+            },
+            runningMode: "VIDEO",
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5
+          });
+
+          successfulPath = modelPath;
+          successfulDelegate = delegate;
+          console.log(`[VISION] Successfully initialized HandLandmarker with ${delegate} from: ${modelPath}`);
           break;
+        } catch (e) {
+          lastError = e;
+          console.warn(`[VISION] Failed with ${delegate} delegate on ${modelPath}:`, e?.message || e);
         }
-      } catch (e) {}
+      }
     }
 
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: resolvedModelPath,
-        delegate: "GPU"
-      },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
+    if (!createdInstance) {
+      throw lastError || new Error("All model candidates and delegates failed.");
+    }
 
+    handLandmarker = createdInstance;
     if (noticeModal) noticeModal.classList.add("hidden");
-    console.log(`[VISION] Hand Landmarker initialized with ${resolvedModelPath}`);
+    updateHitBadge(`VISION READY (${successfulDelegate})`, 1.0);
   } catch (err) {
-    console.error("[VISION] Hand Landmarker load failed:", err);
-    if (noticeText) noticeText.textContent = "VISION INITIALIZE FAILED";
+    console.error("[VISION] Hand Landmarker initialization completely failed:", err);
+    if (noticeText) {
+      const msg = err?.message || String(err);
+      noticeText.textContent = `VISION FAILED: ${msg.slice(0, 48)}`;
+    }
   }
 }
 
