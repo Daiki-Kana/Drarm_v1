@@ -154,38 +154,55 @@ class ProceduralDrumEngine {
   playKick(intensity = 1.0) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
+    const volume = Math.min(1.3, 0.75 * intensity);
+
+    // 1. サブベース成分（低域用ボディ：160Hz -> 48Hz）
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-
-    const startFreq = 140 + 40 * intensity;
-    const endFreq = 36;
-    const duration = 0.28;
+    const duration = 0.26;
 
     osc.type = "sine";
-    osc.frequency.setValueAtTime(startFreq, now);
-    osc.frequency.exponentialRampToValueAtTime(endFreq, now + 0.08);
+    osc.frequency.setValueAtTime(160 + 30 * intensity, now);
+    osc.frequency.exponentialRampToValueAtTime(48, now + 0.08);
 
-    const volume = Math.min(1.2, 0.7 * intensity);
     gain.gain.setValueAtTime(volume, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     osc.connect(gain);
     gain.connect(this.masterGain);
-
     osc.start(now);
     osc.stop(now + duration);
 
-    // クリックアタック
+    // 2. スマホ・内蔵スピーカー可聴用パンチ倍音（三角波：240Hz -> 85Hz）
+    // 小型スピーカー（150Hz以下が出ない端末）でもドスッと力強く響く
+    const punchOsc = this.ctx.createOscillator();
+    const punchGain = this.ctx.createGain();
+    const punchDuration = 0.14;
+
+    punchOsc.type = "triangle";
+    punchOsc.frequency.setValueAtTime(240, now);
+    punchOsc.frequency.exponentialRampToValueAtTime(85, now + 0.06);
+
+    punchGain.gain.setValueAtTime(volume * 0.85, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + punchDuration);
+
+    punchOsc.connect(punchGain);
+    punchGain.connect(this.masterGain);
+    punchOsc.start(now);
+    punchOsc.stop(now + punchDuration);
+
+    // 3. クリックアタック（ビーター衝突感：550Hz -> 180Hz）
     const clickOsc = this.ctx.createOscillator();
     const clickGain = this.ctx.createGain();
-    clickOsc.type = "triangle";
-    clickOsc.frequency.setValueAtTime(400, now);
-    clickGain.gain.setValueAtTime(0.3 * intensity, now);
-    clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
+    clickOsc.type = "sine";
+    clickOsc.frequency.setValueAtTime(550, now);
+    clickOsc.frequency.exponentialRampToValueAtTime(180, now + 0.02);
+    clickGain.gain.setValueAtTime(0.45 * intensity, now);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.02);
     clickOsc.connect(clickGain);
     clickGain.connect(this.masterGain);
     clickOsc.start(now);
-    clickOsc.stop(now + 0.015);
+    clickOsc.stop(now + 0.02);
   }
 
   playSnare(intensity = 1.0) {
@@ -1285,18 +1302,24 @@ function triggerDrumHit(canvasX, canvasY, impactAcc, canvasWidth, canvasHeight) 
       flashZone(zoneCymbal, soundLabel, intensity);
     }
   } else {
-    if (normalizedY > 0.65) {
-      soundLabel = "KICK";
-      drumEngine.playKick(intensity);
-      flashZone(zoneDrum, soundLabel, intensity);
-    } else if (normalizedY < 0.38) {
+    // 画面右側（DRUMエリア：机面でのスネア＆キック＆タム快適叩き分け）
+    if (normalizedY < 0.40) {
+      // 画面上部：タム
       soundLabel = "TOM";
       drumEngine.playTom(intensity);
       flashZone(zoneDrum, soundLabel, intensity);
     } else {
-      soundLabel = "SNARE";
-      drumEngine.playSnare(intensity);
-      flashZone(zoneDrum, soundLabel, intensity);
+      // 机面エリア（内側タップでスネア、外側または強打でキック）
+      const isInnerSnare = canvasX > (canvasWidth * 0.22) && intensity <= 1.18;
+      if (isInnerSnare) {
+        soundLabel = "SNARE";
+        drumEngine.playSnare(intensity);
+        flashZone(zoneDrum, soundLabel, intensity);
+      } else {
+        soundLabel = "KICK";
+        drumEngine.playKick(intensity);
+        flashZone(zoneDrum, soundLabel, intensity);
+      }
     }
   }
 
@@ -1485,33 +1508,42 @@ video.addEventListener("resize", updateCanvasResolution);
 // ==========================================================================
 let lastVideoTimestamp = -1;
 let isPredicting = false;
+let lastPredictTime = performance.now();
+let predictLoopId = null;
 
 function schedulePredictLoop() {
-  if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
-    video.requestVideoFrameCallback((now, metadata) => {
-      const frameTime = metadata?.presentationTime ? metadata.presentationTime * 1000 : now;
-      processVideoFrame(frameTime);
-      schedulePredictLoop();
-    });
-  } else {
-    requestAnimationFrame((now) => {
-      processVideoFrame(now);
-      schedulePredictLoop();
-    });
-  }
+  if (predictLoopId) cancelAnimationFrame(predictLoopId);
+  predictLoopId = requestAnimationFrame(() => {
+    processVideoFrame();
+    schedulePredictLoop();
+  });
 }
 
-function processVideoFrame(frameTime) {
+// ウォッチドッグ安全弁（バックグラウンド復帰や過負荷でのループ停止を自動検知して再起動）
+setInterval(() => {
+  if (!isVideoReady || !handLandmarker || isOfflineAnalyzing) return;
+  if (video.paused || video.ended || video.readyState < 2) return;
+  const elapsed = performance.now() - lastPredictTime;
+  if (elapsed > 1000) {
+    console.warn(`[WATCHDOG] Inference loop stalled (${Math.round(elapsed)}ms). Reviving...`);
+    isPredicting = false;
+    lastVideoTimestamp = performance.now();
+    lastPredictTime = performance.now();
+    schedulePredictLoop();
+  }
+}, 500);
+
+function processVideoFrame() {
   if (!isVideoReady || !handLandmarker) return;
   if (isOfflineAnalyzing) return; // オフライン動画解析中はカメラ推論を一時停止
   if (video.paused || video.ended || video.readyState < 2) return;
   if (isPredicting) return;
   isPredicting = true;
+  lastPredictTime = performance.now();
 
   try {
-    updateCanvasResolution();
-
-    const now = typeof frameTime === "number" && !isNaN(frameTime) ? frameTime : performance.now();
+    // 厳格に単調増加するシステム時刻（performance.now()）でMediaPipe内部フリーズを根絶
+    const now = performance.now();
     const timestampMs = Math.max(now, lastVideoTimestamp + 1.0);
     lastVideoTimestamp = timestampMs;
 
@@ -1533,6 +1565,11 @@ function processVideoFrame(frameTime) {
           handedness = results.handednesses[i][0].categoryName;
         } else {
           handedness = i === 0 ? "Right" : "Left";
+        }
+
+        // 両手が同一ラベル（Rightが2つ等）として検出された場合の混線・上書き破壊を防止
+        if (activeLabels.has(handedness)) {
+          handedness = handedness === "Right" ? "Left" : "Right";
         }
         activeLabels.add(handedness);
 
